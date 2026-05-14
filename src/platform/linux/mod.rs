@@ -158,84 +158,82 @@ impl PlatformExecutor for LinuxExecutor {
         // Create user namespace config
         let user_ns = UserNamespace::new(config.uid, config.gid);
 
+        // Child process entry point
+        let child_fn: Box<dyn FnMut() -> isize> = Box::new(move || {
+            // Create a new process group with this process as leader
+            // This allows us to kill all children with killpg
+            unsafe {
+                libc::setpgid(0, 0);
+            }
+
+            // Wait for parent to setup UID/GID mappings
+            let mut buf = [0u8; 1];
+            let _ = read_raw(ready_read, &mut buf);
+            let _ = close_raw(ready_read);
+
+            // Setup stdin
+            if let Some(stdin_fd) = stdin_read {
+                unsafe {
+                    libc::dup2(stdin_fd, libc::STDIN_FILENO);
+                }
+                let _ = close_raw(stdin_fd);
+            }
+
+            // Redirect stdout/stderr
+            unsafe {
+                libc::dup2(stdout_write, libc::STDOUT_FILENO);
+                libc::dup2(stderr_write, libc::STDERR_FILENO);
+            }
+            let _ = close_raw(stdout_write);
+            let _ = close_raw(stderr_write);
+            let _ = close_raw(stdout_read);
+            let _ = close_raw(stderr_read);
+
+            // Setup hostname (UTS namespace)
+            if let Err(e) = nix::unistd::sethostname(&hostname) {
+                eprintln!("Failed to set hostname: {}", e);
+            }
+
+            // Setup mount namespace if needed
+            if let Some(rootfs) = &child_config.rootfs {
+                if let Err(e) = setup_mount_namespace(rootfs, &child_config.mounts, &child_config.tmpfs_mounts) {
+                    eprintln!("Mount setup failed: {}", e);
+                    return 1;
+                }
+            }
+
+            // Set environment
+            for (key, _) in std::env::vars() {
+                std::env::remove_var(&key);
+            }
+            for (key, value) in &env {
+                std::env::set_var(key, value);
+            }
+            if !env.contains_key("PATH") {
+                std::env::set_var("PATH", "/usr/local/bin:/usr/bin:/bin");
+            }
+
+            // Change working directory
+            if working_dir.exists() {
+                let _ = std::env::set_current_dir(&working_dir);
+            }
+
+            // Apply seccomp filter
+            if !matches!(child_config.seccomp_profile, SeccompProfile::Disabled) {
+                if let Err(e) = SeccompFilter::apply(&child_config.seccomp_profile) {
+                    eprintln!("Seccomp setup failed: {}", e);
+                }
+            }
+
+            // Execute
+            let _ = execvp(&cmd_cstr, &args_cstr);
+            eprintln!("execvp failed");
+            127
+        });
+
         // Clone child
         let child_pid = unsafe {
-            clone(
-            Box::new(move || {
-                // Create a new process group with this process as leader
-                // This allows us to kill all children with killpg
-                unsafe {
-                    libc::setpgid(0, 0);
-                }
-
-                // Wait for parent to setup UID/GID mappings
-                let mut buf = [0u8; 1];
-                let _ = read_raw(ready_read, &mut buf);
-                let _ = close_raw(ready_read);
-
-                // Setup stdin
-                if let Some(stdin_fd) = stdin_read {
-                    unsafe {
-                        libc::dup2(stdin_fd, libc::STDIN_FILENO);
-                    }
-                    let _ = close_raw(stdin_fd);
-                }
-
-                // Redirect stdout/stderr
-                unsafe {
-                    libc::dup2(stdout_write, libc::STDOUT_FILENO);
-                    libc::dup2(stderr_write, libc::STDERR_FILENO);
-                }
-                let _ = close_raw(stdout_write);
-                let _ = close_raw(stderr_write);
-                let _ = close_raw(stdout_read);
-                let _ = close_raw(stderr_read);
-
-                // Setup hostname (UTS namespace)
-                if let Err(e) = nix::unistd::sethostname(&hostname) {
-                    eprintln!("Failed to set hostname: {}", e);
-                }
-
-                // Setup mount namespace if needed
-                if let Some(rootfs) = &child_config.rootfs {
-                    if let Err(e) = setup_mount_namespace(rootfs, &child_config.mounts, &child_config.tmpfs_mounts) {
-                        eprintln!("Mount setup failed: {}", e);
-                        return 1;
-                    }
-                }
-
-                // Set environment
-                for (key, _) in std::env::vars() {
-                    std::env::remove_var(&key);
-                }
-                for (key, value) in &env {
-                    std::env::set_var(key, value);
-                }
-                if !env.contains_key("PATH") {
-                    std::env::set_var("PATH", "/usr/local/bin:/usr/bin:/bin");
-                }
-
-                // Change working directory
-                if working_dir.exists() {
-                    let _ = std::env::set_current_dir(&working_dir);
-                }
-
-                // Apply seccomp filter
-                if !matches!(child_config.seccomp_profile, SeccompProfile::Disabled) {
-                    if let Err(e) = SeccompFilter::apply(&child_config.seccomp_profile) {
-                        eprintln!("Seccomp setup failed: {}", e);
-                    }
-                }
-
-                // Execute
-                let _ = execvp(&cmd_cstr, &args_cstr);
-                eprintln!("execvp failed");
-                127
-            }),
-            &mut stack,
-            clone_flags,
-            Some(Signal::SIGCHLD as i32),
-            )
+            clone(child_fn, &mut stack, clone_flags, Some(Signal::SIGCHLD as i32))
         }.map_err(|e| SandboxError::Internal(format!("clone sandboxed process: {e}")))?;
 
         // Parent process
