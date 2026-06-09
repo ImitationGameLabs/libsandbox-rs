@@ -1,11 +1,12 @@
-//! Error types for nanobox
+//! Error types for libsandbox.
 //!
-//! This module defines all error types used throughout the nanobox library.
+//! This module defines the shared error surface used by the one-shot
+//! execution API and the spawn-based persistent process API.
 
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// Main error type for nanobox operations
+/// Main error type for libsandbox operations.
 #[derive(Error, Debug)]
 pub enum SandboxError {
     // Platform errors
@@ -27,20 +28,6 @@ pub enum SandboxError {
 
     #[error("Failed to enter namespace: {0}")]
     NamespaceEnter(String),
-
-    // macOS-specific
-    #[error("sandbox-exec not available")]
-    SandboxExecUnavailable,
-
-    #[error("Failed to create sandbox profile: {0}")]
-    SandboxProfileCreation(String),
-
-    // Windows-specific
-    #[error("Failed to create job object: {0}")]
-    JobObjectCreation(String),
-
-    #[error("Failed to create restricted token: {0}")]
-    RestrictedTokenCreation(String),
 
     // Mount/filesystem errors
     #[error("Mount failed: {src} -> {target}: {reason}")]
@@ -81,6 +68,9 @@ pub enum SandboxError {
     #[error("Failed to load security filter: {0}")]
     SecurityFilterLoad(String),
 
+    #[error("Seccomp filter build failed: {0}")]
+    SeccompFilterBuild(String),
+
     #[error("Syscall blocked: {syscall}")]
     SyscallBlocked { syscall: String },
 
@@ -118,10 +108,24 @@ pub enum SandboxError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    // Spawn errors
+    #[error("sandbox setup failed: {0}")]
+    SetupFailed(String),
+
+    // Dynamic mount errors
+    #[error("Dynamic mount operation failed: {reason}")]
+    DynamicMountFailed { reason: String },
+
+    #[error("Invalid mount path {path}: {reason}")]
+    InvalidMountPath { path: PathBuf, reason: String },
+
+    #[error("Child process has exited")]
+    ChildExited,
+
     // Other
     #[error("Internal error: {0}")]
     Internal(String),
 }
 
-/// Result type alias for nanobox operations
+/// Result type alias for libsandbox operations.
 pub type Result<T> = std::result::Result<T, SandboxError>;

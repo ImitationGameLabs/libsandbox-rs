@@ -5,7 +5,8 @@
 //! - Process group killing (killpg)
 //! - Signal handler cleanup (SIGTERM/SIGINT handling)
 
-use nanosandbox::Sandbox;
+use libsandbox::config::{FilesystemConfig, ResourceConfig};
+use libsandbox::Sandbox;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -25,8 +26,18 @@ fn test_no_zombie_after_timeout() {
     // Run multiple sandboxes that will timeout
     for _ in 0..5 {
         let sandbox = Sandbox::builder()
-            .working_dir("/tmp")
-            .wall_time_limit(Duration::from_millis(100))
+            .filesystem(
+                FilesystemConfig::builder()
+                    .working_dir("/tmp")
+                    .build()
+                    .unwrap(),
+            )
+            .resources(
+                ResourceConfig::builder()
+                    .wall_time_limit(Duration::from_millis(100))
+                    .build()
+                    .unwrap(),
+            )
             .build()
             .unwrap();
 
@@ -60,8 +71,18 @@ fn test_no_zombie_after_timeout() {
 fn test_process_group_killing() {
     let _guard = PROCESS_TABLE_TEST_LOCK.lock().unwrap();
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_secs(2))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -80,7 +101,7 @@ fn test_process_group_killing() {
     std::thread::sleep(Duration::from_millis(500));
 
     // Check that no orphan sleep 7777 processes remain
-    let orphans = Command::new("pgrep").args(&["-f", "sleep 7777"]).output();
+    let orphans = Command::new("pgrep").args(["-f", "sleep 7777"]).output();
 
     if let Ok(output) = orphans {
         let orphan_pids: Vec<_> = String::from_utf8_lossy(&output.stdout)
@@ -106,8 +127,18 @@ fn test_sigterm_cleanup() {
     // We can't easily test SIGTERM on ourselves, but we can verify
     // the sandbox properly cleans up on normal termination
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_secs(5))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -132,8 +163,18 @@ fn test_rapid_sandbox_no_leaks() {
 
     for _ in 0..20 {
         let sandbox = Sandbox::builder()
-            .working_dir("/tmp")
-            .wall_time_limit(Duration::from_millis(50))
+            .filesystem(
+                FilesystemConfig::builder()
+                    .working_dir("/tmp")
+                    .build()
+                    .unwrap(),
+            )
+            .resources(
+                ResourceConfig::builder()
+                    .wall_time_limit(Duration::from_millis(50))
+                    .build()
+                    .unwrap(),
+            )
             .build()
             .unwrap();
 
@@ -159,8 +200,18 @@ fn test_rapid_sandbox_no_leaks() {
 fn test_deep_process_tree_killed() {
     let _guard = PROCESS_TABLE_TEST_LOCK.lock().unwrap();
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_secs(2))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -179,7 +230,7 @@ fn test_deep_process_tree_killed() {
     // Verify no deep children survive
     std::thread::sleep(Duration::from_millis(500));
 
-    let orphans = Command::new("pgrep").args(&["-f", "sleep 8888"]).output();
+    let orphans = Command::new("pgrep").args(["-f", "sleep 8888"]).output();
 
     if let Ok(output) = orphans {
         assert!(

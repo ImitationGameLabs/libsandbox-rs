@@ -4,7 +4,6 @@
 
 use crate::error::{Result, SandboxError};
 use std::fs;
-use std::path::PathBuf;
 
 /// User namespace configuration
 #[derive(Debug, Clone)]
@@ -16,11 +15,27 @@ pub struct UserNamespace {
 }
 
 impl UserNamespace {
-    /// Create a new user namespace configuration
+    /// Create a new user namespace configuration.
+    ///
+    /// When `uid`/`gid` are `None`, defaults to 0 (root inside the namespace).
+    /// Mapping the parent's UID to 0 inside the child's user namespace grants
+    /// `CAP_SYS_ADMIN` there, which is required for dynamic mount operations
+    /// (the parent's fork helper enters this namespace and must have mount
+    /// privileges).
+    ///
+    /// # Security: why UID 0 is safe
+    ///
+    /// Although the sandboxed process holds `CAP_SYS_ADMIN` within the
+    /// namespace, the seccomp filter blocks all mount-related syscalls
+    /// (`mount`, `umount2`, `pivot_root`, `open_tree`, `move_mount`, …),
+    /// so the child cannot exercise those capabilities. User-namespace
+    /// scoping also ensures the capabilities do not escape to the host.
+    /// The real security boundary is seccomp + namespace isolation, not
+    /// the UID value.
     pub fn new(uid: Option<u32>, gid: Option<u32>) -> Self {
         Self {
-            inner_uid: uid.unwrap_or(1000),
-            inner_gid: gid.unwrap_or(1000),
+            inner_uid: uid.unwrap_or(0),
+            inner_gid: gid.unwrap_or(0),
         }
     }
 
@@ -70,7 +85,7 @@ impl UserNamespace {
 
 impl Default for UserNamespace {
     fn default() -> Self {
-        Self::new(Some(1000), Some(1000))
+        Self::new(Some(0), Some(0))
     }
 }
 
@@ -104,62 +119,6 @@ impl Default for UtsNamespace {
     }
 }
 
-/// Mount namespace configuration
-#[derive(Debug, Clone)]
-pub struct MountNamespace {
-    rootfs: PathBuf,
-    bind_mounts: Vec<(PathBuf, PathBuf, bool)>, // (source, target, readonly)
-    tmpfs_mounts: Vec<(PathBuf, u64)>,          // (path, size)
-}
-
-impl MountNamespace {
-    /// Create a new mount namespace with the given rootfs
-    pub fn new(rootfs: &std::path::Path) -> Self {
-        Self {
-            rootfs: rootfs.to_path_buf(),
-            bind_mounts: Vec::new(),
-            tmpfs_mounts: Vec::new(),
-        }
-    }
-
-    /// Add a bind mount
-    pub fn bind_mount(
-        &mut self,
-        source: &std::path::Path,
-        target: &std::path::Path,
-        readonly: bool,
-    ) {
-        self.bind_mounts
-            .push((source.to_path_buf(), target.to_path_buf(), readonly));
-    }
-
-    /// Add a tmpfs mount
-    pub fn tmpfs(&mut self, path: &std::path::Path, size: u64) {
-        self.tmpfs_mounts.push((path.to_path_buf(), size));
-    }
-
-    /// Get the rootfs path
-    pub fn rootfs(&self) -> &PathBuf {
-        &self.rootfs
-    }
-
-    /// Get bind mounts
-    pub fn bind_mounts(&self) -> &[(PathBuf, PathBuf, bool)] {
-        &self.bind_mounts
-    }
-
-    /// Get tmpfs mounts
-    pub fn tmpfs_mounts(&self) -> &[(PathBuf, u64)] {
-        &self.tmpfs_mounts
-    }
-}
-
-impl Default for MountNamespace {
-    fn default() -> Self {
-        Self::new(std::path::Path::new("/"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,34 +126,20 @@ mod tests {
     #[test]
     fn test_user_namespace_default() {
         let ns = UserNamespace::default();
-        assert_eq!(ns.inner_uid, 1000);
-        assert_eq!(ns.inner_gid, 1000);
+        assert_eq!(ns.inner_uid, 0);
+        assert_eq!(ns.inner_gid, 0);
     }
 
     #[test]
     fn test_user_namespace_custom() {
-        let ns = UserNamespace::new(Some(0), Some(0));
-        assert_eq!(ns.inner_uid, 0);
-        assert_eq!(ns.inner_gid, 0);
+        let ns = UserNamespace::new(Some(1000), Some(1000));
+        assert_eq!(ns.inner_uid, 1000);
+        assert_eq!(ns.inner_gid, 1000);
     }
 
     #[test]
     fn test_uts_namespace() {
         let ns = UtsNamespace::with_hostname("test-sandbox");
         assert_eq!(ns.hostname, "test-sandbox");
-    }
-
-    #[test]
-    fn test_mount_namespace() {
-        let mut ns = MountNamespace::new(std::path::Path::new("/tmp/rootfs"));
-        ns.bind_mount(
-            std::path::Path::new("/home/user/data"),
-            std::path::Path::new("/data"),
-            true,
-        );
-        ns.tmpfs(std::path::Path::new("/tmp"), 64 * 1024 * 1024);
-
-        assert_eq!(ns.bind_mounts().len(), 1);
-        assert_eq!(ns.tmpfs_mounts().len(), 1);
     }
 }

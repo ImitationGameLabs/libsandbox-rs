@@ -1,6 +1,7 @@
 //! Resource exhaustion attack tests
 
-use nanosandbox::{ResourceEnforcement, Sandbox, SandboxError};
+use libsandbox::config::{FilesystemConfig, ResourceConfig};
+use libsandbox::{ResourceEnforcement, Sandbox, SandboxError};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -16,10 +17,20 @@ fn is_memory_unavailable(err: &SandboxError) -> bool {
 #[cfg(target_os = "linux")]
 fn test_fork_bomb_contained() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .max_pids(20)
-        .resource_enforcement(ResourceEnforcement::BestEffort)
-        .wall_time_limit(Duration::from_secs(5))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .max_pids(20)
+                .resource_enforcement(ResourceEnforcement::BestEffort)
+                .wall_time_limit(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -36,10 +47,20 @@ fn test_fork_bomb_contained() {
 #[cfg(target_os = "linux")]
 fn test_memory_bomb_contained() {
     let sandbox = match Sandbox::builder()
-        .working_dir("/tmp")
-        .memory_limit(64 * 1024 * 1024) // 64MB
-        .resource_enforcement(ResourceEnforcement::BestEffort)
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .memory_limit(64 * 1024 * 1024) // 64MB
+                .resource_enforcement(ResourceEnforcement::BestEffort)
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
     {
         Ok(sandbox) => sandbox,
@@ -52,13 +73,13 @@ fn test_memory_bomb_contained() {
         &[
             "-c",
             r#"
-x = []
-try:
-    while True:
-        x.append('A' * 1024 * 1024)
-except MemoryError:
-    print('memory error')
-"#,
+	x = []
+	try:
+	    while True:
+	        x.append('A' * 1024 * 1024)
+	except MemoryError:
+	    print('memory error')
+	"#,
         ],
     );
 
@@ -77,27 +98,27 @@ except MemoryError:
     }
 }
 
-/// CPU bomb test - all platforms
+/// CPU bomb test
 #[test]
 fn test_cpu_bomb_contained() {
     let sandbox = Sandbox::builder()
-        .working_dir(if cfg!(windows) {
-            "C:\\Windows\\Temp"
-        } else {
-            "/tmp"
-        })
-        .wall_time_limit(Duration::from_secs(2))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
-    #[cfg(not(target_os = "windows"))]
     let result = sandbox
         .run("sh", &["-c", "while true; do :; done"])
-        .unwrap();
-
-    #[cfg(target_os = "windows")]
-    let result = sandbox
-        .run("cmd", &["/c", "for /L %i in (1,0,2) do @echo off"])
         .unwrap();
 
     assert!(result.killed_by_timeout);
@@ -108,9 +129,19 @@ fn test_cpu_bomb_contained() {
 #[cfg(target_os = "linux")]
 fn test_disk_bomb_contained_tmpfs() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .tmpfs("/tmp", 10 * 1024 * 1024) // 10MB tmpfs
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .tmpfs("/tmp", 10 * 1024 * 1024) // 10MB tmpfs
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -130,10 +161,20 @@ fn test_disk_bomb_contained_tmpfs() {
 #[cfg(target_os = "linux")]
 fn test_subprocess_bomb_contained() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .max_pids(10)
-        .resource_enforcement(ResourceEnforcement::BestEffort)
-        .wall_time_limit(Duration::from_secs(5))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .max_pids(10)
+                .resource_enforcement(ResourceEnforcement::BestEffort)
+                .wall_time_limit(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -151,11 +192,20 @@ fn test_subprocess_bomb_contained() {
 
 /// File descriptor bomb test
 #[test]
-#[cfg(not(target_os = "windows"))]
 fn test_fd_bomb_contained() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_secs(5))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -199,9 +249,19 @@ print(f'opened {len(fds)} fds')
 #[cfg(target_os = "linux")]
 fn test_directory_bomb_contained() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .tmpfs("/tmp", 10 * 1024 * 1024) // 10MB
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .tmpfs("/tmp", 10 * 1024 * 1024) // 10MB
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 

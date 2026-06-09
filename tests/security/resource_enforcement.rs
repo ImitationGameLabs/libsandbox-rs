@@ -1,11 +1,11 @@
 //! P0: Resource Limits Enforcement Tests
 //!
 //! Tests for:
-//! - setrlimit actually being called (macOS)
 //! - cgroup cleanup after execution (Linux)
 //! - OOM detection from cgroup events (Linux)
 
-use nanosandbox::{MetricStatus, ResourceEnforcement, Sandbox, SandboxError};
+use libsandbox::config::{FilesystemConfig, ResourceConfig};
+use libsandbox::{MetricStatus, ResourceEnforcement, Sandbox, SandboxError};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -16,73 +16,24 @@ fn is_memory_unavailable(err: &SandboxError) -> bool {
     )
 }
 
-/// Test: Memory limit should actually be enforced via setrlimit (macOS)
-///
-/// NOTE: RLIMIT_AS on macOS doesn't effectively limit memory for many programs
-/// because modern allocators use mmap which may not be counted against AS.
-/// This test verifies that setrlimit is called, but may not always trigger.
-#[test]
-#[cfg(target_os = "macos")]
-fn test_macos_memory_limit_enforced() {
-    let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .memory_limit(50 * 1024 * 1024) // 50MB
-        .wall_time_limit(Duration::from_secs(10))
-        .build()
-        .unwrap();
-
-    // Verify sandbox can be built with memory limit
-    // The actual enforcement depends on the program's allocation strategy
-    let result = sandbox.run("sh", &["-c", "echo memory_limit_set"]).unwrap();
-    assert_eq!(result.exit_code, 0);
-    assert!(result.stdout.contains("memory_limit_set"));
-
-    // Test that the limit is passed - check ulimit
-    let result = sandbox.run("sh", &["-c", "ulimit -v"]).unwrap();
-    // ulimit should show the limit (in KB)
-    let output = result.stdout.trim();
-    if output != "unlimited" {
-        let limit_kb: u64 = output.parse().unwrap_or(0);
-        // Should be around 50MB = ~50000 KB
-        assert!(
-            limit_kb > 0 && limit_kb <= 60000,
-            "Memory limit should be ~50MB, got {} KB",
-            limit_kb
-        );
-    }
-}
-
-/// Test: Max processes limit on macOS
-///
-/// NOTE: RLIMIT_NPROC on macOS affects the ENTIRE USER, not just the sandbox.
-/// This makes it unsuitable for sandboxing, so we intentionally do NOT use it.
-/// On Linux, we use cgroups pids controller instead.
-#[test]
-#[cfg(target_os = "macos")]
-fn test_macos_max_pids_not_enforced_intentionally() {
-    // This test documents that max_pids is NOT enforced via RLIMIT_NPROC on macOS
-    // because RLIMIT_NPROC limits processes for the entire user, not per-sandbox
-    let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .max_pids(5)
-        .wall_time_limit(Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    // On macOS, max_pids is accepted but not enforced via RLIMIT_NPROC
-    // This is by design - use Linux cgroups for proper pid limiting
-    let result = sandbox.run("sh", &["-c", "echo ok"]).unwrap();
-    assert_eq!(result.exit_code, 0);
-}
-
 /// Test: Max open files limit should be enforced via setrlimit
 #[test]
 #[cfg(unix)]
 fn test_max_open_files_enforced() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .max_open_files(20)
-        .wall_time_limit(Duration::from_secs(5))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .max_open_files(20)
+                .wall_time_limit(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -99,7 +50,7 @@ fn test_max_open_files_enforced() {
 
 /// Test: Cgroup directories should be cleaned up after execution (Linux)
 ///
-/// Current bug: cgroups accumulate in /sys/fs/cgroup/nanosandbox-*
+/// Current bug: cgroups accumulate in /sys/fs/cgroup/libsandbox-*
 /// Expected: Cgroup directory deleted after sandbox exits
 #[test]
 #[cfg(target_os = "linux")]
@@ -108,26 +59,36 @@ fn test_linux_cgroup_cleanup() {
 
     let cgroup_base = "/sys/fs/cgroup";
 
-    // Count existing nanosandbox cgroups
-    let count_nanosandbox_cgroups = || -> usize {
+    // Count existing libsandbox cgroups
+    let count_libsandbox_cgroups = || -> usize {
         if let Ok(entries) = fs::read_dir(cgroup_base) {
             entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.file_name().to_string_lossy().starts_with("nanosandbox-"))
+                .filter(|e| e.file_name().to_string_lossy().starts_with("libsandbox-"))
                 .count()
         } else {
             0
         }
     };
 
-    let initial_count = count_nanosandbox_cgroups();
+    let initial_count = count_libsandbox_cgroups();
 
     // Run several sandboxes
     for _ in 0..5 {
         let sandbox = match Sandbox::builder()
-            .working_dir("/tmp")
-            .memory_limit(64 * 1024 * 1024)
-            .resource_enforcement(ResourceEnforcement::BestEffort)
+            .filesystem(
+                FilesystemConfig::builder()
+                    .working_dir("/tmp")
+                    .build()
+                    .unwrap(),
+            )
+            .resources(
+                ResourceConfig::builder()
+                    .memory_limit(64 * 1024 * 1024)
+                    .resource_enforcement(ResourceEnforcement::BestEffort)
+                    .build()
+                    .unwrap(),
+            )
             .build()
         {
             Ok(sandbox) => sandbox,
@@ -141,7 +102,7 @@ fn test_linux_cgroup_cleanup() {
     // Wait for cleanup
     std::thread::sleep(Duration::from_millis(500));
 
-    let final_count = count_nanosandbox_cgroups();
+    let final_count = count_libsandbox_cgroups();
 
     // Should not accumulate (allow 1 transient)
     assert!(
@@ -160,10 +121,20 @@ fn test_linux_cgroup_cleanup() {
 #[cfg(target_os = "linux")]
 fn test_linux_oom_detection() {
     let sandbox = match Sandbox::builder()
-        .working_dir("/tmp")
-        .memory_limit(32 * 1024 * 1024) // 32MB - very tight
-        .resource_enforcement(ResourceEnforcement::BestEffort)
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .memory_limit(32 * 1024 * 1024) // 32MB - very tight
+                .resource_enforcement(ResourceEnforcement::BestEffort)
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
     {
         Ok(sandbox) => sandbox,
@@ -197,7 +168,7 @@ fn test_linux_oom_detection() {
 
     if matches!(
         report.diagnostics.limits.memory,
-        nanosandbox::LimitStatus::Enforced
+        libsandbox::LimitStatus::Enforced
     ) && !result.killed_by_timeout
     {
         assert!(
@@ -208,7 +179,7 @@ fn test_linux_oom_detection() {
     }
 }
 
-/// Test: Peak memory should be collected (Linux via cgroup, macOS via rusage)
+/// Test: Peak memory should be collected (Linux via cgroup)
 ///
 /// Current bug: peak_memory is always None
 /// Expected: peak_memory contains actual peak RSS
@@ -216,10 +187,20 @@ fn test_linux_oom_detection() {
 #[cfg(unix)]
 fn test_peak_memory_collection() {
     let sandbox = match Sandbox::builder()
-        .working_dir("/tmp")
-        .memory_limit(256 * 1024 * 1024)
-        .resource_enforcement(ResourceEnforcement::BestEffort)
-        .wall_time_limit(Duration::from_secs(5))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .memory_limit(256 * 1024 * 1024)
+                .resource_enforcement(ResourceEnforcement::BestEffort)
+                .wall_time_limit(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
         .build()
     {
         Ok(sandbox) => sandbox,
@@ -274,8 +255,18 @@ fn test_peak_memory_collection() {
 #[cfg(unix)]
 fn test_cpu_time_collection() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 

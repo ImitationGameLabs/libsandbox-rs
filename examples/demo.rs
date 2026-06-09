@@ -1,15 +1,21 @@
-//! Demo: verify nanosandbox actually works
+//! Demo: verify libsandbox actually works
 
-use nanosandbox::Sandbox;
+use libsandbox::config::{EnvironmentConfig, FilesystemConfig, NetworkConfig, ResourceConfig};
+use libsandbox::Sandbox;
 use std::time::Duration;
 
 fn main() {
-    println!("=== nanosandbox demo ===\n");
+    println!("=== libsandbox demo ===\n");
 
     // 1. Basic command execution
     println!("1. Basic execution:");
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -21,8 +27,18 @@ fn main() {
     // 2. Timeout enforcement
     println!("\n2. Timeout (500ms limit, 5s sleep):");
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_millis(500))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_millis(500))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -36,8 +52,18 @@ fn main() {
     println!("\n3. Environment isolation:");
     std::env::set_var("SECRET", "should_not_leak");
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .env("VISIBLE", "yes")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .environment(
+            EnvironmentConfig::builder()
+                .env("VISIBLE", "yes")
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -49,7 +75,15 @@ fn main() {
 
     // 4. Exit code propagation
     println!("\n4. Exit code propagation:");
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     let result = sandbox.run("sh", &["-c", "exit 42"]).unwrap();
     println!("   exit_code: {}", result.exit_code);
@@ -71,9 +105,19 @@ fn main() {
     // 7. Network blocking
     println!("\n7. Network blocking:");
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .no_network()
-        .wall_time_limit(Duration::from_secs(5))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::none())
         .build()
         .unwrap();
 

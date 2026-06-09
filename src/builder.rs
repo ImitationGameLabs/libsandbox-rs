@@ -1,147 +1,68 @@
-//! Sandbox builder implementation
+//! Sandbox builder implementation.
 //!
-//! Provides a fluent API for configuring and building sandboxes.
+//! Provides a fluent API for composing domain configs into a sandbox.
 
+use crate::config::ResourceEnforcement;
+use crate::config::{
+    EnvironmentConfig, FilesystemConfig, NetworkConfig, ResourceConfig, SecurityConfig,
+};
 use crate::error::{Result, SandboxError};
 use crate::sandbox::Sandbox;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::time::Duration;
 
-/// File/directory mount permission
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Permission {
-    ReadOnly,
-    ReadWrite,
-}
-
-/// Network access mode
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum NetworkMode {
-    /// No network access (default, most secure)
-    #[default]
-    None,
-    /// Use host network (not recommended, breaks isolation)
-    Host,
-    /// Network access through proxy with domain whitelist
-    Proxied { allowed_domains: Vec<String> },
-}
-
-/// Seccomp security profile (syscall filtering)
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum SeccompProfile {
-    /// Disable seccomp filtering (not recommended)
-    Disabled,
-    /// Allow only safe syscalls (most restrictive)
-    Strict,
-    /// Standard set of allowed syscalls
-    #[default]
-    Standard,
-    /// More permissive, for interactive use
-    Permissive,
-    /// Custom syscall whitelist
-    Custom(Vec<String>),
-}
-
-/// How strictly Linux cgroup-backed resource limits should be enforced.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum ResourceEnforcement {
-    /// Fail closed when an explicitly requested cgroup-backed limit cannot be enforced.
-    #[default]
-    Strict,
-    /// Continue execution and surface any skipped limits through diagnostics.
-    BestEffort,
-}
-
-/// Tracks which cgroup-backed limits were explicitly requested by the caller.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CgroupLimitRequests {
-    pub memory: bool,
-    pub cpu: bool,
-    pub pids: bool,
-}
-
-/// Execution policy derived from builder state.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ExecutionPolicy {
-    pub resource_enforcement: ResourceEnforcement,
-    pub cgroup_limit_requests: CgroupLimitRequests,
-}
-
-/// Mount configuration
-#[derive(Clone, Debug)]
-pub struct Mount {
-    pub source: PathBuf,
-    pub target: PathBuf,
-    pub permission: Permission,
-}
-
-/// Sandbox configuration built by the builder
-#[derive(Clone, Debug)]
+/// Sandbox configuration — a composition of domain configs.
+///
+/// Produced by [`SandboxBuilder::build()`] and consumed by the platform
+/// executor at spawn time. Users do not construct this directly.
+#[derive(Clone, Debug, Default)]
 pub struct SandboxConfig {
-    // Filesystem
-    pub mounts: Vec<Mount>,
-    pub tmpfs_mounts: Vec<(PathBuf, u64)>,
-    pub working_dir: PathBuf,
-    pub rootfs: Option<PathBuf>,
-
-    // Resource limits
-    pub memory_limit: Option<u64>,
-    pub cpu_limit: Option<f64>,
-    pub wall_time_limit: Option<Duration>,
-    pub cpu_time_limit: Option<Duration>,
-    pub max_pids: Option<u32>,
-    pub max_file_size: Option<u64>,
-    pub max_open_files: Option<u32>,
-
-    // Network
-    pub network_mode: NetworkMode,
-
-    // Security
-    pub seccomp_profile: SeccompProfile,
-    pub uid: Option<u32>,
-    pub gid: Option<u32>,
-
-    // Environment
-    pub env: HashMap<String, String>,
-    pub clear_env: bool,
-    pub hostname: String,
+    pub filesystem: FilesystemConfig,
+    pub resources: ResourceConfig,
+    pub network: NetworkConfig,
+    pub security: SecurityConfig,
+    pub environment: EnvironmentConfig,
 }
 
-impl Default for SandboxConfig {
-    fn default() -> Self {
-        Self {
-            mounts: Vec::new(),
-            tmpfs_mounts: Vec::new(),
-            working_dir: PathBuf::from("/"),
-            rootfs: None,
-
-            memory_limit: None,
-            cpu_limit: None,
-            wall_time_limit: None,
-            cpu_time_limit: None,
-            max_pids: Some(64),
-            max_file_size: None,
-            max_open_files: None,
-
-            network_mode: NetworkMode::None,
-            seccomp_profile: SeccompProfile::Standard,
-            uid: None,
-            gid: None,
-
-            env: HashMap::new(),
-            clear_env: true,
-            hostname: "sandbox".into(),
-        }
-    }
-}
-
-/// Sandbox builder with fluent API
+/// Sandbox builder — an aggregator for domain configs.
+///
+/// Construct via [`Sandbox::builder()`] or one of the preset methods
+/// ([`Sandbox::code_judge`], [`Sandbox::agent_executor`], etc.).
+/// Each domain has its own builder (e.g., [`ResourceConfig::builder()`])
+/// that produces a typed config struct. Use the consume methods
+/// (`.filesystem()`, `.resources()`, etc.) to set domain configs.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use libsandbox::{Sandbox, Permission, MB};
+/// use libsandbox::config::{FilesystemConfig, ResourceConfig, NetworkConfig};
+/// use std::time::Duration;
+///
+/// let sandbox = Sandbox::builder()
+///     .filesystem(
+///         FilesystemConfig::builder()
+///             .mount("/data/input", "/input", Permission::ReadOnly)
+///             .working_dir("/tmp")
+///             .build()
+///             .unwrap()
+///     )
+///     .resources(
+///         ResourceConfig::builder()
+///             .memory_limit(512 * MB)
+///             .wall_time_limit(Duration::from_secs(30))
+///             .build()
+///             .unwrap()
+///     )
+///     .network(NetworkConfig::none())
+///     .build()
+///     .unwrap();
+/// ```
 #[derive(Clone)]
 pub struct SandboxBuilder {
-    config: SandboxConfig,
-    resource_enforcement: ResourceEnforcement,
-    cgroup_limit_requests: CgroupLimitRequests,
+    pub(crate) filesystem: FilesystemConfig,
+    pub(crate) resources: ResourceConfig,
+    pub(crate) network: NetworkConfig,
+    pub(crate) security: SecurityConfig,
+    pub(crate) environment: EnvironmentConfig,
 }
 
 impl Default for SandboxBuilder {
@@ -151,206 +72,77 @@ impl Default for SandboxBuilder {
 }
 
 impl SandboxBuilder {
-    /// Create a new SandboxBuilder with default settings
+    /// Create a new `SandboxBuilder` with default settings.
     pub fn new() -> Self {
         Self {
-            config: SandboxConfig::default(),
-            resource_enforcement: ResourceEnforcement::Strict,
-            cgroup_limit_requests: CgroupLimitRequests::default(),
+            filesystem: FilesystemConfig::default(),
+            resources: ResourceConfig::default(),
+            network: NetworkConfig::default(),
+            security: SecurityConfig::default(),
+            environment: EnvironmentConfig::default(),
         }
     }
 
-    /// Split the builder into config plus execution policy.
-    pub(crate) fn into_parts(self) -> (SandboxConfig, ExecutionPolicy) {
-        (
-            self.config,
-            ExecutionPolicy {
-                resource_enforcement: self.resource_enforcement,
-                cgroup_limit_requests: self.cgroup_limit_requests,
-            },
-        )
-    }
+    // ========== Domain consume methods ==========
 
-    // ========== Filesystem ==========
-
-    /// Mount a file or directory into the sandbox
-    pub fn mount(
-        mut self,
-        source: impl Into<PathBuf>,
-        target: impl Into<PathBuf>,
-        permission: Permission,
-    ) -> Self {
-        self.config.mounts.push(Mount {
-            source: source.into(),
-            target: target.into(),
-            permission,
-        });
+    /// Set the filesystem configuration.
+    pub fn filesystem(mut self, config: FilesystemConfig) -> Self {
+        self.filesystem = config;
         self
     }
 
-    /// Mount a tmpfs (memory filesystem)
-    pub fn tmpfs(mut self, path: impl Into<PathBuf>, size_bytes: u64) -> Self {
-        self.config.tmpfs_mounts.push((path.into(), size_bytes));
+    /// Set the resource limit configuration.
+    pub fn resources(mut self, config: ResourceConfig) -> Self {
+        self.resources = config;
         self
     }
 
-    /// Set the working directory inside the sandbox
-    pub fn working_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.config.working_dir = path.into();
+    /// Set the network configuration.
+    pub fn network(mut self, config: NetworkConfig) -> Self {
+        self.network = config;
         self
     }
 
-    /// Use a custom rootfs
-    pub fn rootfs(mut self, path: impl Into<PathBuf>) -> Self {
-        self.config.rootfs = Some(path.into());
+    /// Set the security configuration.
+    pub fn security(mut self, config: SecurityConfig) -> Self {
+        self.security = config;
         self
     }
 
-    // ========== Resource Limits ==========
-
-    /// Set memory limit in bytes
-    pub fn memory_limit(mut self, bytes: u64) -> Self {
-        self.config.memory_limit = Some(bytes);
-        self.cgroup_limit_requests.memory = true;
-        self
-    }
-
-    /// Set CPU limit (0.0 - N.0, where N is number of CPU cores)
-    pub fn cpu_limit(mut self, cpus: f64) -> Self {
-        self.config.cpu_limit = Some(cpus);
-        self.cgroup_limit_requests.cpu = true;
-        self
-    }
-
-    /// Set wall clock time limit (process will be killed after this duration)
-    pub fn wall_time_limit(mut self, duration: Duration) -> Self {
-        self.config.wall_time_limit = Some(duration);
-        self
-    }
-
-    /// Set CPU time limit
-    pub fn cpu_time_limit(mut self, duration: Duration) -> Self {
-        self.config.cpu_time_limit = Some(duration);
-        self
-    }
-
-    /// Set maximum number of processes/threads
-    pub fn max_pids(mut self, n: u32) -> Self {
-        self.config.max_pids = Some(n);
-        self.cgroup_limit_requests.pids = true;
-        self
-    }
-
-    /// Control whether explicitly requested Linux cgroup-backed limits fail closed
-    /// or degrade best-effort when they cannot be enforced. In rootless Linux
-    /// execution, explicitly requested memory limits still fail closed unless a
-    /// usable delegated cgroup v2 parent is available.
-    pub fn resource_enforcement(mut self, enforcement: ResourceEnforcement) -> Self {
-        self.resource_enforcement = enforcement;
-        self
-    }
-
-    /// Set maximum file size
-    pub fn max_file_size(mut self, bytes: u64) -> Self {
-        self.config.max_file_size = Some(bytes);
-        self
-    }
-
-    /// Set maximum number of open files
-    pub fn max_open_files(mut self, n: u32) -> Self {
-        self.config.max_open_files = Some(n);
-        self
-    }
-
-    // ========== Network ==========
-
-    /// Disable network access (default)
-    pub fn no_network(mut self) -> Self {
-        self.config.network_mode = NetworkMode::None;
-        self
-    }
-
-    /// Use host network (not recommended)
-    pub fn host_network(mut self) -> Self {
-        self.config.network_mode = NetworkMode::Host;
-        self
-    }
-
-    /// Allow network access only to specified domains
-    pub fn allow_network(mut self, domains: &[&str]) -> Self {
-        self.config.network_mode = NetworkMode::Proxied {
-            allowed_domains: domains.iter().map(|s| s.to_string()).collect(),
-        };
-        self
-    }
-
-    // ========== Security ==========
-
-    /// Set seccomp profile
-    pub fn seccomp_profile(mut self, profile: SeccompProfile) -> Self {
-        self.config.seccomp_profile = profile;
-        self
-    }
-
-    /// Set UID inside the sandbox
-    pub fn uid(mut self, uid: u32) -> Self {
-        self.config.uid = Some(uid);
-        self
-    }
-
-    /// Set GID inside the sandbox
-    pub fn gid(mut self, gid: u32) -> Self {
-        self.config.gid = Some(gid);
-        self
-    }
-
-    // ========== Environment ==========
-
-    /// Set an environment variable
-    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.config.env.insert(key.into(), value.into());
-        self
-    }
-
-    /// Set multiple environment variables
-    pub fn envs(mut self, envs: impl IntoIterator<Item = (String, String)>) -> Self {
-        self.config.env.extend(envs);
-        self
-    }
-
-    /// Whether to clear inherited environment variables (default: true)
-    pub fn clear_env(mut self, clear: bool) -> Self {
-        self.config.clear_env = clear;
-        self
-    }
-
-    /// Set hostname inside the sandbox
-    pub fn hostname(mut self, name: impl Into<String>) -> Self {
-        self.config.hostname = name.into();
+    /// Set the environment configuration.
+    pub fn environment(mut self, config: EnvironmentConfig) -> Self {
+        self.environment = config;
         self
     }
 
     // ========== Build ==========
 
-    /// Build the sandbox
+    /// Build the sandbox.
     pub fn build(self) -> Result<Sandbox> {
         self.validate()?;
-        Sandbox::from_builder(self)
+        let config = SandboxConfig {
+            filesystem: self.filesystem,
+            resources: self.resources,
+            network: self.network,
+            security: self.security,
+            environment: self.environment,
+        };
+        let execution_policy = config.resources.to_execution_policy();
+        Sandbox::from_config(config, execution_policy)
     }
 
     fn validate(&self) -> Result<()> {
-        // Pre-check platform capabilities
         self.pre_check_platform()?;
 
-        // Validate mount paths exist
-        for mount in &self.config.mounts {
+        // Validate mount source paths exist.
+        for mount in &self.filesystem.mounts {
             if !mount.source.exists() {
                 return Err(SandboxError::PathNotFound(mount.source.clone()));
             }
         }
 
-        // Validate rootfs if specified
-        if let Some(rootfs) = &self.config.rootfs {
+        // Validate rootfs if specified.
+        if let Some(rootfs) = &self.filesystem.rootfs {
             if !rootfs.exists() || !rootfs.is_dir() {
                 return Err(SandboxError::PathNotFound(rootfs.clone()));
             }
@@ -359,80 +151,64 @@ impl SandboxBuilder {
         Ok(())
     }
 
-    /// Pre-check platform capabilities before building sandbox
+    /// Pre-check platform capabilities before building sandbox.
     fn pre_check_platform(&self) -> Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            let support = crate::platform::linux::probe_cgroup_support();
+        use crate::cgroup::{probe_cgroup_support, CgroupController};
 
-            if self.cgroup_limit_requests.memory && unsafe { libc::geteuid() } != 0 {
-                if !support.can_enforce(crate::platform::linux::CgroupController::Memory) {
+        let support = probe_cgroup_support();
+
+        if self.resources.cgroup_limit_requests.memory
+            && !nix::unistd::geteuid().is_root()
+            && !support.can_enforce(CgroupController::Memory)
+        {
+            return Err(SandboxError::ResourceLimitUnavailable {
+                limit: "memory".into(),
+                reason: support.unavailable_reason(Some(CgroupController::Memory)),
+            });
+        }
+
+        let strict_limits = [
+            (
+                self.resources.cgroup_limit_requests.memory,
+                CgroupController::Memory,
+                "memory",
+            ),
+            (
+                self.resources.cgroup_limit_requests.cpu,
+                CgroupController::Cpu,
+                "cpu",
+            ),
+            (
+                self.resources.cgroup_limit_requests.pids,
+                CgroupController::Pids,
+                "pids",
+            ),
+        ];
+
+        if self.resources.resource_enforcement == ResourceEnforcement::Strict
+            && strict_limits.iter().any(|(requested, _, _)| *requested)
+        {
+            for (requested, controller, name) in strict_limits {
+                if !requested {
+                    continue;
+                }
+                if !support.can_enforce(controller) {
                     return Err(SandboxError::ResourceLimitUnavailable {
-                        limit: "memory".into(),
-                        reason: support.unavailable_reason(Some(
-                            crate::platform::linux::CgroupController::Memory,
-                        )),
+                        limit: name.into(),
+                        reason: support.unavailable_reason(Some(controller)),
                     });
                 }
             }
-
-            let strict_limits = [
-                (
-                    self.cgroup_limit_requests.memory,
-                    crate::platform::linux::CgroupController::Memory,
-                    "memory",
-                ),
-                (
-                    self.cgroup_limit_requests.cpu,
-                    crate::platform::linux::CgroupController::Cpu,
-                    "cpu",
-                ),
-                (
-                    self.cgroup_limit_requests.pids,
-                    crate::platform::linux::CgroupController::Pids,
-                    "pids",
-                ),
-            ];
-
-            if self.resource_enforcement == ResourceEnforcement::Strict
-                && strict_limits.iter().any(|(requested, _, _)| *requested)
-            {
-                for (requested, controller, name) in strict_limits {
-                    if !requested {
-                        continue;
-                    }
-                    if !support.can_enforce(controller) {
-                        return Err(SandboxError::ResourceLimitUnavailable {
-                            limit: name.into(),
-                            reason: support.unavailable_reason(Some(controller)),
-                        });
-                    }
-                }
-            }
-
-            // Check user namespace support
-            if let Ok(content) =
-                std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone")
-            {
-                if content.trim() == "0" {
-                    return Err(SandboxError::Config(
-                        "Unprivileged user namespaces disabled. Run: sudo sysctl kernel.unprivileged_userns_clone=1".into()
-                    ));
-                }
-            }
         }
 
-        #[cfg(target_os = "macos")]
-        {
-            // Check sandbox-exec availability
-            if !std::path::Path::new("/usr/bin/sandbox-exec").exists() {
+        // Check user namespace support.
+        if let Ok(content) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
+            if content.trim() == "0" {
                 return Err(SandboxError::Config(
-                    "sandbox-exec not found at /usr/bin/sandbox-exec".into(),
+                    "Unprivileged user namespaces disabled. Run: sudo sysctl kernel.unprivileged_userns_clone=1".into()
                 ));
             }
         }
-
-        // Windows: Job Objects are always available, no pre-check needed
 
         Ok(())
     }
@@ -441,78 +217,150 @@ impl SandboxBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{CgroupLimitRequests, SeccompProfile};
 
     #[test]
     fn test_builder_default() {
         let builder = SandboxBuilder::new();
-        let config = builder.config;
-        assert!(config.mounts.is_empty());
-        assert!(config.memory_limit.is_none());
-        assert_eq!(config.max_pids, Some(64));
-        assert!(matches!(config.network_mode, NetworkMode::None));
+        assert!(builder.filesystem.mounts.is_empty());
+        assert!(builder.resources.memory_limit.is_none());
+        assert_eq!(builder.resources.max_pids, Some(64));
+        assert!(matches!(
+            builder.network.mode,
+            crate::config::NetworkMode::None
+        ));
     }
 
     #[test]
     fn test_builder_memory_limit() {
-        let builder = SandboxBuilder::new().memory_limit(512 * 1024 * 1024);
-        assert_eq!(builder.config.memory_limit, Some(512 * 1024 * 1024));
-        assert!(builder.cgroup_limit_requests.memory);
+        let builder = SandboxBuilder::new().resources(
+            ResourceConfig::builder()
+                .memory_limit(512 * 1024 * 1024)
+                .build()
+                .unwrap(),
+        );
+        assert_eq!(builder.resources.memory_limit, Some(512 * 1024 * 1024));
+        assert!(builder.resources.cgroup_limit_requests.memory);
     }
 
     #[test]
     fn test_builder_env() {
-        let builder = SandboxBuilder::new().env("FOO", "bar").env("BAZ", "qux");
-        assert_eq!(builder.config.env.get("FOO"), Some(&"bar".to_string()));
-        assert_eq!(builder.config.env.get("BAZ"), Some(&"qux".to_string()));
+        let config = EnvironmentConfig::builder()
+            .env("FOO", "bar")
+            .env("BAZ", "qux")
+            .build()
+            .unwrap();
+        assert_eq!(config.env.get("FOO"), Some(&"bar".to_string()));
+        assert_eq!(config.env.get("BAZ"), Some(&"qux".to_string()));
     }
 
     #[test]
     fn test_builder_tmpfs() {
-        let builder = SandboxBuilder::new().tmpfs("/tmp", 64 * 1024 * 1024);
-        assert_eq!(builder.config.tmpfs_mounts.len(), 1);
-        assert_eq!(builder.config.tmpfs_mounts[0].1, 64 * 1024 * 1024);
+        let config = FilesystemConfig::builder()
+            .tmpfs("/tmp", 64 * 1024 * 1024)
+            .build()
+            .unwrap();
+        assert_eq!(config.tmpfs_mounts.len(), 1);
+        assert_eq!(config.tmpfs_mounts[0].1, 64 * 1024 * 1024);
     }
 
     #[test]
     fn test_builder_network_modes() {
-        let builder = SandboxBuilder::new().no_network();
-        assert!(matches!(builder.config.network_mode, NetworkMode::None));
+        let config = NetworkConfig::none();
+        assert!(matches!(config.mode, crate::config::NetworkMode::None));
 
-        let builder = SandboxBuilder::new().host_network();
-        assert!(matches!(builder.config.network_mode, NetworkMode::Host));
+        let config = NetworkConfig::host();
+        assert!(matches!(config.mode, crate::config::NetworkMode::Host));
 
-        let builder = SandboxBuilder::new().allow_network(&["example.com"]);
+        let config = NetworkConfig::proxied(&["example.com"]);
         assert!(matches!(
-            builder.config.network_mode,
-            NetworkMode::Proxied { .. }
+            config.mode,
+            crate::config::NetworkMode::Proxied { .. }
         ));
     }
 
     #[test]
     fn test_seccomp_profile() {
-        let builder = SandboxBuilder::new().seccomp_profile(SeccompProfile::Strict);
-        assert!(matches!(
-            builder.config.seccomp_profile,
-            SeccompProfile::Strict
-        ));
+        let config = SecurityConfig::builder()
+            .seccomp_profile(SeccompProfile::Strict)
+            .build()
+            .unwrap();
+        assert!(matches!(config.seccomp_profile, SeccompProfile::Strict));
     }
 
     #[test]
     fn test_resource_enforcement_default() {
         let builder = SandboxBuilder::new();
-        assert_eq!(builder.resource_enforcement, ResourceEnforcement::Strict);
         assert_eq!(
-            builder.cgroup_limit_requests,
+            builder.resources.resource_enforcement,
+            ResourceEnforcement::Strict
+        );
+        assert_eq!(
+            builder.resources.cgroup_limit_requests,
             CgroupLimitRequests::default()
         );
     }
 
     #[test]
     fn test_resource_enforcement_override() {
-        let builder = SandboxBuilder::new().resource_enforcement(ResourceEnforcement::BestEffort);
+        let builder = SandboxBuilder::new().resources(
+            ResourceConfig::builder()
+                .resource_enforcement(ResourceEnforcement::BestEffort)
+                .build()
+                .unwrap(),
+        );
         assert_eq!(
-            builder.resource_enforcement,
+            builder.resources.resource_enforcement,
             ResourceEnforcement::BestEffort
         );
+    }
+
+    #[test]
+    fn test_seccomp_profile_equality() {
+        assert_eq!(SeccompProfile::Disabled, SeccompProfile::Disabled);
+        assert_eq!(SeccompProfile::Strict, SeccompProfile::Strict);
+        assert_eq!(SeccompProfile::Standard, SeccompProfile::Standard);
+        assert_eq!(SeccompProfile::Permissive, SeccompProfile::Permissive);
+        assert_ne!(SeccompProfile::Standard, SeccompProfile::Strict);
+        assert_ne!(SeccompProfile::Disabled, SeccompProfile::Permissive);
+    }
+
+    #[test]
+    fn test_seccomp_profile_custom_equality() {
+        use crate::seccomp::{SeccompAction, SeccompFilterBuilder};
+
+        let a = SeccompFilterBuilder::new(SeccompAction::Allow)
+            .deny("ptrace")
+            .unwrap()
+            .build()
+            .unwrap();
+        let b = SeccompFilterBuilder::new(SeccompAction::Allow)
+            .deny("ptrace")
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(SeccompProfile::Custom(a), SeccompProfile::Custom(b));
+
+        let c = SeccompFilterBuilder::new(SeccompAction::Allow)
+            .deny("mount")
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_ne!(SeccompProfile::Custom(c), SeccompProfile::Standard);
+    }
+
+    #[test]
+    fn test_seccomp_filter_inequality() {
+        use crate::seccomp::{SeccompAction, SeccompFilterBuilder};
+
+        let a = SeccompFilterBuilder::new(SeccompAction::Allow)
+            .build()
+            .unwrap();
+        let b = SeccompFilterBuilder::new(SeccompAction::Allow)
+            .deny("ptrace")
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_ne!(a, b);
     }
 }

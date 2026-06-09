@@ -5,7 +5,8 @@
 //! - Resource pre-check (verify permissions before execution)
 //! - Detailed error types (distinguish command not found vs permission denied vs resource limit)
 
-use nanosandbox::{ResourceEnforcement, Sandbox, SandboxError};
+use libsandbox::config::{FilesystemConfig, ResourceConfig};
+use libsandbox::{Permission, ResourceEnforcement, Sandbox, SandboxError};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -19,7 +20,15 @@ fn is_memory_unavailable(err: &SandboxError) -> bool {
 /// Test: Missing command should return CommandNotFound error
 #[test]
 fn test_error_command_not_found() {
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     let result = sandbox.run("nonexistent_command_xyz_123", &[]);
 
@@ -50,7 +59,7 @@ fn test_error_permission_denied() {
     use std::fs::{self, File};
     use std::os::unix::fs::PermissionsExt;
 
-    let temp_dir = std::env::temp_dir().join("nanosandbox_perm_test");
+    let temp_dir = std::env::temp_dir().join("libsandbox_perm_test");
     let _ = fs::create_dir_all(&temp_dir);
     let script = temp_dir.join("no_exec.sh");
 
@@ -58,7 +67,15 @@ fn test_error_permission_denied() {
     File::create(&script).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o644)).unwrap();
 
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     let result = sandbox.run(script.to_str().unwrap(), &[]);
 
@@ -88,10 +105,15 @@ fn test_error_permission_denied() {
 #[test]
 fn test_error_path_not_found() {
     let result = Sandbox::builder()
-        .mount(
-            "/nonexistent/path/xyz",
-            "/sandbox/mount",
-            nanosandbox::Permission::ReadOnly,
+        .filesystem(
+            FilesystemConfig::builder()
+                .mount(
+                    "/nonexistent/path/xyz",
+                    "/sandbox/mount",
+                    Permission::ReadOnly,
+                )
+                .build()
+                .unwrap(),
         )
         .build();
 
@@ -111,7 +133,14 @@ fn test_error_path_not_found() {
 /// Test: Invalid rootfs should return appropriate error
 #[test]
 fn test_error_invalid_rootfs() {
-    let result = Sandbox::builder().rootfs("/nonexistent/rootfs").build();
+    let result = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .rootfs("/nonexistent/rootfs")
+                .build()
+                .unwrap(),
+        )
+        .build();
 
     match result {
         Err(SandboxError::PathNotFound(_)) => {
@@ -126,27 +155,25 @@ fn test_error_invalid_rootfs() {
     }
 }
 
-/// Test: Graceful handling when sandbox-exec unavailable (macOS)
-#[test]
-#[cfg(target_os = "macos")]
-fn test_graceful_sandbox_exec_check() {
-    // This test verifies we check for sandbox-exec availability
-    // The actual sandbox creation should work on macOS
-    let result = Sandbox::builder().working_dir("/tmp").build();
-
-    // Should succeed on macOS where sandbox-exec exists
-    assert!(result.is_ok(), "Sandbox should be available on macOS");
-}
-
 /// Test: Graceful handling when cgroups unavailable (Linux)
 #[test]
 #[cfg(target_os = "linux")]
 fn test_graceful_cgroup_check() {
-    use nanosandbox::platform::linux::{probe_cgroup_support, CgroupController};
+    use libsandbox::cgroup::{probe_cgroup_support, CgroupController};
 
     let strict = Sandbox::builder()
-        .working_dir("/tmp")
-        .memory_limit(64 * 1024 * 1024) // Requires cgroups
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .memory_limit(64 * 1024 * 1024) // Requires cgroups
+                .build()
+                .unwrap(),
+        )
         .build();
 
     let support = probe_cgroup_support();
@@ -166,9 +193,19 @@ fn test_graceful_cgroup_check() {
     }
 
     let best_effort = Sandbox::builder()
-        .working_dir("/tmp")
-        .memory_limit(64 * 1024 * 1024)
-        .resource_enforcement(ResourceEnforcement::BestEffort)
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .memory_limit(64 * 1024 * 1024)
+                .resource_enforcement(ResourceEnforcement::BestEffort)
+                .build()
+                .unwrap(),
+        )
         .build();
     if support.can_enforce(CgroupController::Memory) {
         assert!(
@@ -190,8 +227,18 @@ fn test_graceful_cgroup_check() {
 #[test]
 fn test_error_timeout_distinguishable() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_millis(100))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_millis(100))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -208,10 +255,15 @@ fn test_error_timeout_distinguishable() {
 #[test]
 fn test_error_contains_context() {
     let result = Sandbox::builder()
-        .mount(
-            "/nonexistent/specific/path/for/test",
-            "/mnt",
-            nanosandbox::Permission::ReadOnly,
+        .filesystem(
+            FilesystemConfig::builder()
+                .mount(
+                    "/nonexistent/specific/path/for/test",
+                    "/mnt",
+                    Permission::ReadOnly,
+                )
+                .build()
+                .unwrap(),
         )
         .build();
 
@@ -236,7 +288,12 @@ fn test_error_contains_context() {
 fn test_validation_reports_issues() {
     // This tests that validation catches problems early
     let result = Sandbox::builder()
-        .mount("/nonexistent1", "/mnt1", nanosandbox::Permission::ReadOnly)
+        .filesystem(
+            FilesystemConfig::builder()
+                .mount("/nonexistent1", "/mnt1", Permission::ReadOnly)
+                .build()
+                .unwrap(),
+        )
         .build();
 
     // Should fail at validation
@@ -256,10 +313,20 @@ fn test_validation_reports_issues() {
 #[test]
 fn test_valid_config_succeeds() {
     let result = Sandbox::builder()
-        .working_dir("/tmp")
-        .memory_limit(256 * 1024 * 1024)
-        .resource_enforcement(ResourceEnforcement::BestEffort)
-        .wall_time_limit(Duration::from_secs(60))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .memory_limit(256 * 1024 * 1024)
+                .resource_enforcement(ResourceEnforcement::BestEffort)
+                .wall_time_limit(Duration::from_secs(60))
+                .build()
+                .unwrap(),
+        )
         .build();
     #[cfg(target_os = "linux")]
     if let Err(err) = &result {
@@ -283,7 +350,12 @@ fn test_valid_config_succeeds() {
 #[test]
 fn test_error_display_user_friendly() {
     let result = Sandbox::builder()
-        .mount("/does/not/exist", "/mnt", nanosandbox::Permission::ReadOnly)
+        .filesystem(
+            FilesystemConfig::builder()
+                .mount("/does/not/exist", "/mnt", Permission::ReadOnly)
+                .build()
+                .unwrap(),
+        )
         .build();
 
     if let Err(e) = result {

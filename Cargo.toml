@@ -1,12 +1,11 @@
 [package]
-name = "nanosandbox"
+name = "libsandbox"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Lightweight cross-platform sandbox for secure code execution"
-keywords = ["sandbox", "container", "security", "isolation", "cross-platform"]
+description = "Linux-first sandbox runtime for interactive agent sessions"
+keywords = ["sandbox", "linux", "agent", "security"]
 categories = ["os::linux-apis", "development-tools"]
-repository = "https://github.com/Erio-Harrison/nanosandbox"
 
 [dependencies]
 # Error handling
@@ -17,19 +16,13 @@ tracing = "0.1"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 
 # Async runtime (for HTTP proxy)
 tokio = { version = "1.0", features = ["net", "io-util", "rt-multi-thread", "sync", "macros", "time"] }
 
-[target.'cfg(unix)'.dependencies]
-# Unix syscalls
+# Linux syscalls
 nix = { version = "0.31", features = ["sched", "mount", "signal", "user", "fs", "hostname", "process", "net"] }
 libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-# Windows API
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_Security", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3.10"

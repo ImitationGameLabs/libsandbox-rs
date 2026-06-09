@@ -2,7 +2,7 @@
 //!
 //! This module defines the result types returned from sandbox execution.
 
-use crate::builder::ExecutionPolicy;
+use crate::config::ExecutionPolicy;
 use std::time::Duration;
 
 /// Result of executing a command in the sandbox

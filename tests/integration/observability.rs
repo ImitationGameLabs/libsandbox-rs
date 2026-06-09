@@ -5,7 +5,8 @@
 //! - Execution metrics collection
 //! - Security audit logging
 
-use nanosandbox::{ResourceEnforcement, Sandbox, SandboxError};
+use libsandbox::config::{FilesystemConfig, ResourceConfig};
+use libsandbox::{ResourceEnforcement, Sandbox, SandboxError};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -19,7 +20,15 @@ fn is_memory_unavailable(err: &SandboxError) -> bool {
 /// Test: ExecutionResult should contain timing information
 #[test]
 fn test_result_contains_timing() {
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     let result = sandbox.run("sleep", &["0.1"]).unwrap();
 
@@ -39,9 +48,25 @@ fn test_result_contains_timing() {
 /// Test: Sandbox should have unique, traceable ID
 #[test]
 fn test_sandbox_has_traceable_id() {
-    let sandbox1 = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox1 = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
-    let sandbox2 = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox2 = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     let id1 = sandbox1.id();
     let id2 = sandbox2.id();
@@ -65,32 +90,33 @@ fn test_sandbox_has_traceable_id() {
 /// Test: Platform should be identifiable
 #[test]
 fn test_platform_identifiable() {
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     let platform = sandbox.platform();
 
-    // Should be one of known platforms
-    assert!(
-        ["linux", "macos", "windows"].contains(&platform),
-        "Unknown platform: {}",
-        platform
-    );
-
-    // Should match actual OS
-    #[cfg(target_os = "linux")]
     assert_eq!(platform, "linux");
-
-    #[cfg(target_os = "macos")]
-    assert_eq!(platform, "macos");
-
-    #[cfg(target_os = "windows")]
-    assert_eq!(platform, "windows");
 }
 
 /// Test: Exit codes should be accurately captured
 #[test]
 fn test_exit_code_accuracy() {
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     // Test various exit codes
     for expected_code in [0, 1, 42, 127, 255] {
@@ -110,8 +136,18 @@ fn test_exit_code_accuracy() {
 #[cfg(unix)]
 fn test_signal_capture() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_secs(5))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -140,8 +176,18 @@ fn test_signal_capture() {
 #[test]
 fn test_timeout_flag_accuracy() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_millis(100))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_millis(100))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -160,7 +206,15 @@ fn test_timeout_flag_accuracy() {
 /// Test: Stdout and stderr should be properly separated
 #[test]
 fn test_output_separation() {
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     let result = sandbox
         .run("sh", &["-c", "echo STDOUT; echo STDERR >&2"])
@@ -190,9 +244,19 @@ fn test_output_separation() {
 #[test]
 fn test_resource_metrics_structure() {
     let sandbox = match Sandbox::builder()
-        .working_dir("/tmp")
-        .memory_limit(128 * 1024 * 1024)
-        .resource_enforcement(ResourceEnforcement::BestEffort)
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .memory_limit(128 * 1024 * 1024)
+                .resource_enforcement(ResourceEnforcement::BestEffort)
+                .build()
+                .unwrap(),
+        )
         .build()
     {
         Ok(sandbox) => sandbox,
@@ -217,7 +281,15 @@ fn test_resource_metrics_structure() {
 /// Test: Duration should be accurate for various execution times
 #[test]
 fn test_duration_accuracy() {
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     // Short command
     let result = sandbox.run("true", &[]).unwrap();
@@ -244,7 +316,15 @@ fn test_duration_accuracy() {
 /// Test: Multiple runs should each have independent metrics
 #[test]
 fn test_independent_metrics() {
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     let sleeps = ["0.2", "0.5", "0.8"];
     let results: Vec<_> = (0..3)
@@ -273,7 +353,15 @@ fn test_independent_metrics() {
 /// Test: Error output should be captured completely
 #[test]
 fn test_error_output_capture() {
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     // Generate multi-line error
     let result = sandbox
@@ -301,8 +389,18 @@ fn test_error_output_capture() {
 #[test]
 fn test_large_output_capture() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_secs(30))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -335,7 +433,15 @@ fn test_large_output_capture() {
 /// Test: Binary output should not corrupt results
 #[test]
 fn test_binary_output_handling() {
-    let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
 
     // Output some binary data
     let result = sandbox

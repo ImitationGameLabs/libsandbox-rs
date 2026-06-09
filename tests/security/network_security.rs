@@ -5,14 +5,15 @@
 //! - Proxy domain validation
 //! - DNS resolution control
 
-use nanosandbox::Sandbox;
+use libsandbox::config::{FilesystemConfig, NetworkConfig, ResourceConfig};
+use libsandbox::Sandbox;
 use std::time::Duration;
 
 /// Test: Direct IP connections should be blocked when using domain whitelist
 ///
 /// KNOWN LIMITATION: Currently, sandboxed processes can bypass the domain whitelist
-/// by connecting directly via IP. Proper fix requires network namespace (Linux) or
-/// PF firewall rules (macOS) to force all traffic through the proxy.
+/// by connecting directly via IP. Proper fix requires iptables/nftables rules
+/// to force all traffic through the proxy.
 ///
 /// This test is ignored until the fix is implemented.
 #[test]
@@ -20,9 +21,19 @@ use std::time::Duration;
 #[cfg(unix)]
 fn test_ip_bypass_blocked() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["example.com"]) // Only example.com allowed
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["example.com"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -60,16 +71,26 @@ fn test_ip_bypass_blocked() {
 #[cfg(unix)]
 fn test_non_whitelisted_domain_blocked() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["api.example.com"]) // Only api.example.com allowed
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["api.example.com"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
     // Try to access a non-whitelisted domain through the proxy
     let result = sandbox.run("sh", &["-c", r#"
         if command -v curl >/dev/null 2>&1; then
-            # Force curl through the sandbox proxy so we assert on nanosandbox's
+            # Force curl through the sandbox proxy so we assert on libsandbox's
             # policy result, not on curl's environment-variable heuristics.
             response=$(curl -sS --connect-timeout 5 --proxy "$http_proxy" http://httpbin.org/get 2>&1)
             status=$?
@@ -99,9 +120,19 @@ fn test_non_whitelisted_domain_blocked() {
 #[cfg(unix)]
 fn test_whitelisted_domain_allowed() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["httpbin.org"])
-        .wall_time_limit(Duration::from_secs(30))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["httpbin.org"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -151,9 +182,19 @@ fn test_whitelisted_domain_allowed() {
 #[cfg(unix)]
 fn test_wildcard_domain_matching() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["*.example.com"])
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["*.example.com"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -192,9 +233,19 @@ fn test_wildcard_domain_matching() {
 #[cfg(unix)]
 fn test_https_tunnel_respects_whitelist() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["api.github.com"])
-        .wall_time_limit(Duration::from_secs(15))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["api.github.com"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(15))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -235,9 +286,19 @@ fn test_https_tunnel_respects_whitelist() {
 #[cfg(unix)]
 fn test_network_none_blocks_all() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .no_network()
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::none())
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -281,9 +342,19 @@ fn test_network_none_blocks_all() {
 #[cfg(unix)]
 fn test_localhost_always_allowed() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["example.com"]) // Whitelist mode
-        .wall_time_limit(Duration::from_secs(5))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["example.com"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 

@@ -1,14 +1,15 @@
-//! Integration tests for nanosandbox
+//! Integration tests for libsandbox
 //!
 //! These tests verify that the sandbox actually works on the current platform.
 
-use nanosandbox::Sandbox;
+use libsandbox::config::{EnvironmentConfig, FilesystemConfig, NetworkConfig, ResourceConfig};
+use libsandbox::Sandbox;
 use std::time::Duration;
 
 #[test]
 fn test_platform_supported() {
-    assert!(nanosandbox::is_platform_supported());
-    let name = nanosandbox::platform_name();
+    assert!(libsandbox::is_platform_supported());
+    let name = libsandbox::platform_name();
     assert!(!name.is_empty());
     println!("Running on platform: {}", name);
 }
@@ -16,7 +17,12 @@ fn test_platform_supported() {
 #[test]
 fn test_simple_command() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -36,7 +42,12 @@ fn test_simple_command() {
 #[test]
 fn test_command_with_stdin() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -51,7 +62,12 @@ fn test_command_with_stdin() {
 #[test]
 fn test_exit_code() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -67,7 +83,12 @@ fn test_exit_code() {
 #[test]
 fn test_stderr() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -82,8 +103,18 @@ fn test_stderr() {
 #[test]
 fn test_timeout() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .wall_time_limit(Duration::from_millis(500))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_millis(500))
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -100,9 +131,19 @@ fn test_timeout() {
 #[test]
 fn test_environment_variables() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .env("MY_VAR", "my_value")
-        .env("ANOTHER_VAR", "123")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .environment(
+            EnvironmentConfig::builder()
+                .env("MY_VAR", "my_value")
+                .env("ANOTHER_VAR", "123")
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -119,7 +160,12 @@ fn test_environment_variables() {
 fn test_python_execution() {
     // Skip if Python is not available
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -153,12 +199,22 @@ fn test_python_execution() {
 #[test]
 fn test_sandbox_id_unique() {
     let sandbox1 = Sandbox::builder()
-        .working_dir("/tmp")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
     let sandbox2 = Sandbox::builder()
-        .working_dir("/tmp")
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -190,48 +246,11 @@ fn test_presets() {
         .expect("interactive preset failed");
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn test_macos_sandbox_restrictions() {
-    // On macOS, verify that sandbox-exec is being used
-    // by checking that network access is blocked when configured
-
-    let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .no_network()
-        .wall_time_limit(Duration::from_secs(5))
-        .build()
-        .expect("Failed to build sandbox");
-
-    // Try to access a network resource - should fail or timeout
-    let result = sandbox.run(
-        "curl",
-        &["-s", "--connect-timeout", "2", "https://example.com"],
-    );
-
-    // The command should either fail or return an error
-    match result {
-        Ok(r) => {
-            // If curl runs, it should fail due to network restrictions
-            println!(
-                "curl result: exit_code={}, stdout={}, stderr={}",
-                r.exit_code,
-                r.stdout.len(),
-                r.stderr
-            );
-        }
-        Err(e) => {
-            // Expected - curl might not be able to run or network is blocked
-            println!("Expected network error: {:?}", e);
-        }
-    }
-}
-
 // ========== Network Proxy Tests ==========
 
 #[test]
 fn test_proxied_network_setup() {
-    use nanosandbox::network::ProxiedNetwork;
+    use libsandbox::network::ProxiedNetwork;
 
     // Setup proxy with allowed domains
     let proxy = ProxiedNetwork::setup(vec!["example.com".into(), "*.github.com".into()])
@@ -258,9 +277,19 @@ fn test_proxied_network_setup() {
 #[test]
 fn test_sandbox_with_proxied_network() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["example.com"])
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["example.com"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .expect("Failed to build sandbox");
 
@@ -276,8 +305,13 @@ fn test_sandbox_with_proxied_network() {
 #[test]
 fn test_proxy_env_vars_in_sandbox() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["api.example.com"])
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["api.example.com"]))
         .build()
         .expect("Failed to build sandbox");
 

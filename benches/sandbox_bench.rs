@@ -1,9 +1,11 @@
-//! Performance benchmarks for nanosandbox
+//! Performance benchmarks for libsandbox
 //!
 //! Run with: cargo bench
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use nanosandbox::{Permission, Sandbox, MB};
+use libsandbox::config::{FilesystemConfig, ResourceConfig, SecurityConfig};
+use libsandbox::SeccompProfile;
+use libsandbox::{Permission, Sandbox, MB};
 use std::time::Duration;
 
 /// Benchmark sandbox creation overhead
@@ -13,11 +15,12 @@ fn bench_sandbox_creation(c: &mut Criterion) {
     group.bench_function("minimal", |b| {
         b.iter(|| {
             let sandbox = Sandbox::builder()
-                .working_dir(if cfg!(windows) {
-                    "C:\\Windows\\Temp"
-                } else {
-                    "/tmp"
-                })
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .build()
+                        .unwrap(),
+                )
                 .build()
                 .unwrap();
             black_box(sandbox)
@@ -27,14 +30,20 @@ fn bench_sandbox_creation(c: &mut Criterion) {
     group.bench_function("with_limits", |b| {
         b.iter(|| {
             let sandbox = Sandbox::builder()
-                .working_dir(if cfg!(windows) {
-                    "C:\\Windows\\Temp"
-                } else {
-                    "/tmp"
-                })
-                .memory_limit(256 * MB)
-                .wall_time_limit(Duration::from_secs(30))
-                .max_pids(100)
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .build()
+                        .unwrap(),
+                )
+                .resources(
+                    ResourceConfig::builder()
+                        .memory_limit(256 * MB)
+                        .wall_time_limit(Duration::from_secs(30))
+                        .max_pids(100)
+                        .build()
+                        .unwrap(),
+                )
                 .build()
                 .unwrap();
             black_box(sandbox)
@@ -44,12 +53,13 @@ fn bench_sandbox_creation(c: &mut Criterion) {
     group.bench_function("with_mounts", |b| {
         b.iter(|| {
             let sandbox = Sandbox::builder()
-                .working_dir(if cfg!(windows) {
-                    "C:\\Windows\\Temp"
-                } else {
-                    "/tmp"
-                })
-                .mount("/tmp", "/data", Permission::ReadOnly)
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .mount("/tmp", "/data", Permission::ReadOnly)
+                        .build()
+                        .unwrap(),
+                )
                 .build()
                 .unwrap();
             black_box(sandbox)
@@ -65,48 +75,41 @@ fn bench_command_execution(c: &mut Criterion) {
 
     // Pre-create sandbox for execution benchmarks
     let sandbox = Sandbox::builder()
-        .working_dir(if cfg!(windows) {
-            "C:\\Windows\\Temp"
-        } else {
-            "/tmp"
-        })
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        group.bench_function("echo", |b| {
-            b.iter(|| {
-                let result = sandbox.run("echo", &["hello"]).unwrap();
-                black_box(result)
-            })
-        });
+    group.bench_function("echo", |b| {
+        b.iter(|| {
+            let result = sandbox.run("echo", &["hello"]).unwrap();
+            black_box(result)
+        })
+    });
 
-        group.bench_function("true", |b| {
-            b.iter(|| {
-                let result = sandbox.run("true", &[]).unwrap();
-                black_box(result)
-            })
-        });
+    group.bench_function("true", |b| {
+        b.iter(|| {
+            let result = sandbox.run("true", &[]).unwrap();
+            black_box(result)
+        })
+    });
 
-        group.bench_function("shell_command", |b| {
-            b.iter(|| {
-                let result = sandbox.run("sh", &["-c", "echo test"]).unwrap();
-                black_box(result)
-            })
-        });
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        group.bench_function("echo", |b| {
-            b.iter(|| {
-                let result = sandbox.run("cmd", &["/c", "echo hello"]).unwrap();
-                black_box(result)
-            })
-        });
-    }
+    group.bench_function("shell_command", |b| {
+        b.iter(|| {
+            let result = sandbox.run("sh", &["-c", "echo test"]).unwrap();
+            black_box(result)
+        })
+    });
 
     group.finish();
 }
@@ -116,16 +119,21 @@ fn bench_output_sizes(c: &mut Criterion) {
     let mut group = c.benchmark_group("output_sizes");
 
     let sandbox = Sandbox::builder()
-        .working_dir(if cfg!(windows) {
-            "C:\\Windows\\Temp"
-        } else {
-            "/tmp"
-        })
-        .wall_time_limit(Duration::from_secs(30))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
-    #[cfg(not(target_os = "windows"))]
     for size in [10, 100, 1000, 10000] {
         group.bench_with_input(BenchmarkId::new("lines", size), &size, |b, &size| {
             b.iter(|| {
@@ -144,16 +152,21 @@ fn bench_stdin_input(c: &mut Criterion) {
     let mut group = c.benchmark_group("stdin_input");
 
     let sandbox = Sandbox::builder()
-        .working_dir(if cfg!(windows) {
-            "C:\\Windows\\Temp"
-        } else {
-            "/tmp"
-        })
-        .wall_time_limit(Duration::from_secs(30))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
-    #[cfg(not(target_os = "windows"))]
     for size in [100, 1000, 10000] {
         group.bench_with_input(BenchmarkId::new("bytes", size), &size, |b, &size| {
             let input: Vec<u8> = vec![b'x'; size];
@@ -170,8 +183,6 @@ fn bench_stdin_input(c: &mut Criterion) {
 /// Benchmark sandbox with different security profiles
 #[cfg(target_os = "linux")]
 fn bench_seccomp_profiles(c: &mut Criterion) {
-    use nanosandbox::SeccompProfile;
-
     let mut group = c.benchmark_group("seccomp_profiles");
 
     for (name, profile) in [
@@ -183,9 +194,24 @@ fn bench_seccomp_profiles(c: &mut Criterion) {
         group.bench_function(name, |b| {
             b.iter(|| {
                 let sandbox = Sandbox::builder()
-                    .working_dir("/tmp")
-                    .seccomp_profile(profile.clone())
-                    .wall_time_limit(Duration::from_secs(10))
+                    .filesystem(
+                        FilesystemConfig::builder()
+                            .working_dir("/tmp")
+                            .build()
+                            .unwrap(),
+                    )
+                    .resources(
+                        ResourceConfig::builder()
+                            .wall_time_limit(Duration::from_secs(10))
+                            .build()
+                            .unwrap(),
+                    )
+                    .security(
+                        SecurityConfig::builder()
+                            .seccomp_profile(profile.clone())
+                            .build()
+                            .unwrap(),
+                    )
                     .build()
                     .unwrap();
                 let result = sandbox.run("echo", &["test"]).unwrap();
@@ -212,19 +238,21 @@ fn bench_parallel_execution(c: &mut Criterion) {
                         .map(|_| {
                             std::thread::spawn(|| {
                                 let sandbox = Sandbox::builder()
-                                    .working_dir(if cfg!(windows) {
-                                        "C:\\Windows\\Temp"
-                                    } else {
-                                        "/tmp"
-                                    })
-                                    .wall_time_limit(Duration::from_secs(10))
+                                    .filesystem(
+                                        FilesystemConfig::builder()
+                                            .working_dir("/tmp")
+                                            .build()
+                                            .unwrap(),
+                                    )
+                                    .resources(
+                                        ResourceConfig::builder()
+                                            .wall_time_limit(Duration::from_secs(10))
+                                            .build()
+                                            .unwrap(),
+                                    )
                                     .build()
                                     .unwrap();
-                                #[cfg(not(target_os = "windows"))]
-                                let result = sandbox.run("echo", &["test"]).unwrap();
-                                #[cfg(target_os = "windows")]
-                                let result = sandbox.run("cmd", &["/c", "echo test"]).unwrap();
-                                result
+                                sandbox.run("echo", &["test"]).unwrap()
                             })
                         })
                         .collect();
@@ -239,7 +267,6 @@ fn bench_parallel_execution(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(target_os = "linux")]
 criterion_group!(
     benches,
     bench_sandbox_creation,
@@ -247,16 +274,6 @@ criterion_group!(
     bench_output_sizes,
     bench_stdin_input,
     bench_seccomp_profiles,
-    bench_parallel_execution,
-);
-
-#[cfg(not(target_os = "linux"))]
-criterion_group!(
-    benches,
-    bench_sandbox_creation,
-    bench_command_execution,
-    bench_output_sizes,
-    bench_stdin_input,
     bench_parallel_execution,
 );
 

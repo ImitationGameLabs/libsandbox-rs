@@ -1,26 +1,37 @@
 //! Network Whitelist Example
 //!
-//! Demonstrates using nanosandbox's network whitelisting feature to allow
+//! Demonstrates using libsandbox's network whitelisting feature to allow
 //! sandboxed processes to access only specific domains.
 //!
 //! Run with: cargo run --example network_allow
 
-use nanosandbox::Sandbox;
+use libsandbox::config::{FilesystemConfig, NetworkConfig, ResourceConfig};
+use libsandbox::Sandbox;
 use std::time::Duration;
 
 fn main() {
     println!("=== Network Whitelist Example ===\n");
 
     // Create workspace
-    let workspace = std::env::temp_dir().join("nanosandbox_network_demo");
+    let workspace = std::env::temp_dir().join("libsandbox_network_demo");
     std::fs::create_dir_all(&workspace).unwrap();
 
     // 1. No network access (default)
     println!("1. No network access (default):");
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .no_network()
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::none())
         .build()
         .unwrap();
 
@@ -29,7 +40,7 @@ fn main() {
             "curl",
             &["-s", "--connect-timeout", "3", "https://httpbin.org/ip"],
         )
-        .unwrap_or_else(|_| nanosandbox::result::ExecutionResult {
+        .unwrap_or_else(|_| libsandbox::result::ExecutionResult {
             stdout: String::new(),
             stderr: "curl not found".into(),
             exit_code: 1,
@@ -52,9 +63,19 @@ fn main() {
     println!("   Allowed: httpbin.org, *.github.com");
 
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["httpbin.org", "*.github.com"])
-        .wall_time_limit(Duration::from_secs(30))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["httpbin.org", "*.github.com"]))
         .build()
         .unwrap();
 
@@ -158,8 +179,16 @@ print(f"PATH: {os.environ.get('PATH', 'not set')[:50]}...")
 
     // Mount workspace and run
     let sandbox = Sandbox::agent_executor(&workspace)
-        .allow_network(&["api.openai.com", "api.anthropic.com"])
-        .wall_time_limit(Duration::from_secs(10))
+        .network(NetworkConfig::proxied(&[
+            "api.openai.com",
+            "api.anthropic.com",
+        ]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 

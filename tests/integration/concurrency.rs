@@ -5,7 +5,8 @@
 //! - Parallel execution safety
 //! - Cgroup name collision prevention (Linux)
 
-use nanosandbox::{ResourceEnforcement, Sandbox};
+use libsandbox::config::{EnvironmentConfig, FilesystemConfig, NetworkConfig, ResourceConfig};
+use libsandbox::{ResourceEnforcement, Sandbox};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -23,7 +24,15 @@ fn test_sandbox_id_unique_across_threads() {
         let handle = thread::spawn(move || {
             let mut local_ids = vec![];
             for _ in 0..5 {
-                let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+                let sandbox = Sandbox::builder()
+                    .filesystem(
+                        FilesystemConfig::builder()
+                            .working_dir("/tmp")
+                            .build()
+                            .unwrap(),
+                    )
+                    .build()
+                    .unwrap();
                 local_ids.push(sandbox.id().to_string());
             }
             local_ids
@@ -59,9 +68,24 @@ fn test_parallel_execution_isolation() {
         let results_clone = Arc::clone(&results);
         let handle = thread::spawn(move || {
             let sandbox = Sandbox::builder()
-                .working_dir("/tmp")
-                .env("UNIQUE_ID", i.to_string())
-                .wall_time_limit(Duration::from_secs(5))
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .build()
+                        .unwrap(),
+                )
+                .environment(
+                    EnvironmentConfig::builder()
+                        .env("UNIQUE_ID", i.to_string())
+                        .build()
+                        .unwrap(),
+                )
+                .resources(
+                    ResourceConfig::builder()
+                        .wall_time_limit(Duration::from_secs(5))
+                        .build()
+                        .unwrap(),
+                )
                 .build()
                 .unwrap();
 
@@ -103,10 +127,20 @@ fn test_cgroup_no_conflicts() {
     for i in 0..10 {
         let handle = thread::spawn(move || {
             let sandbox = Sandbox::builder()
-                .working_dir("/tmp")
-                .memory_limit(64 * 1024 * 1024)
-                .resource_enforcement(ResourceEnforcement::BestEffort)
-                .wall_time_limit(Duration::from_secs(5))
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .build()
+                        .unwrap(),
+                )
+                .resources(
+                    ResourceConfig::builder()
+                        .memory_limit(64 * 1024 * 1024)
+                        .resource_enforcement(ResourceEnforcement::BestEffort)
+                        .wall_time_limit(Duration::from_secs(5))
+                        .build()
+                        .unwrap(),
+                )
                 .build();
 
             if let Ok(sandbox) = sandbox {
@@ -144,9 +178,19 @@ fn test_concurrent_proxy_no_conflicts() {
     for _ in 0..5 {
         let handle = thread::spawn(move || {
             let sandbox = Sandbox::builder()
-                .working_dir("/tmp")
-                .allow_network(&["example.com"])
-                .wall_time_limit(Duration::from_secs(5))
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .build()
+                        .unwrap(),
+                )
+                .network(NetworkConfig::proxied(&["example.com"]))
+                .resources(
+                    ResourceConfig::builder()
+                        .wall_time_limit(Duration::from_secs(5))
+                        .build()
+                        .unwrap(),
+                )
                 .build();
 
             match sandbox {
@@ -187,8 +231,18 @@ fn test_rapid_create_destroy() {
     for _ in 0..50 {
         let handle = thread::spawn(|| {
             let sandbox = Sandbox::builder()
-                .working_dir("/tmp")
-                .wall_time_limit(Duration::from_millis(100))
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .build()
+                        .unwrap(),
+                )
+                .resources(
+                    ResourceConfig::builder()
+                        .wall_time_limit(Duration::from_millis(100))
+                        .build()
+                        .unwrap(),
+                )
                 .build()
                 .unwrap();
 
@@ -217,7 +271,15 @@ fn test_no_data_races() {
     for _ in 0..20 {
         let counter = Arc::clone(&success_count);
         let handle = thread::spawn(move || {
-            let sandbox = Sandbox::builder().working_dir("/tmp").build().unwrap();
+            let sandbox = Sandbox::builder()
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .build()
+                        .unwrap(),
+                )
+                .build()
+                .unwrap();
 
             let result = sandbox.run("echo", &["test"]).unwrap();
             if result.exit_code == 0 && result.stdout.trim() == "test" {
@@ -247,8 +309,18 @@ fn test_timeout_under_contention() {
     for _ in 0..10 {
         let handle = thread::spawn(|| {
             let sandbox = Sandbox::builder()
-                .working_dir("/tmp")
-                .wall_time_limit(Duration::from_millis(200))
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .build()
+                        .unwrap(),
+                )
+                .resources(
+                    ResourceConfig::builder()
+                        .wall_time_limit(Duration::from_millis(200))
+                        .build()
+                        .unwrap(),
+                )
                 .build()
                 .unwrap();
 
@@ -284,8 +356,18 @@ fn test_parallel_cleanup() {
     for _ in 0..10 {
         let handle = thread::spawn(|| {
             let sandbox = Sandbox::builder()
-                .working_dir("/tmp")
-                .wall_time_limit(Duration::from_millis(100))
+                .filesystem(
+                    FilesystemConfig::builder()
+                        .working_dir("/tmp")
+                        .build()
+                        .unwrap(),
+                )
+                .resources(
+                    ResourceConfig::builder()
+                        .wall_time_limit(Duration::from_millis(100))
+                        .build()
+                        .unwrap(),
+                )
                 .build()
                 .unwrap();
 
@@ -303,7 +385,7 @@ fn test_parallel_cleanup() {
     thread::sleep(Duration::from_millis(500));
 
     // Check for zombie processes
-    let output = Command::new("ps").args(&["aux"]).output().unwrap();
+    let output = Command::new("ps").args(["aux"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let zombies: Vec<&str> = stdout
         .lines()

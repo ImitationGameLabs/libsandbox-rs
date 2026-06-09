@@ -6,7 +6,8 @@
 //! - Proxy timeout handling
 //! - Error retry logic
 
-use nanosandbox::Sandbox;
+use libsandbox::config::{FilesystemConfig, NetworkConfig, ResourceConfig};
+use libsandbox::Sandbox;
 use std::time::Duration;
 
 /// Test: Proxy should handle chunked transfer encoding
@@ -17,9 +18,19 @@ use std::time::Duration;
 #[cfg(unix)]
 fn test_proxy_chunked_transfer() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["httpbin.org"])
-        .wall_time_limit(Duration::from_secs(30))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["httpbin.org"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -71,9 +82,19 @@ fn test_proxy_chunked_transfer() {
 #[cfg(unix)]
 fn test_proxy_keepalive() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["httpbin.org"])
-        .wall_time_limit(Duration::from_secs(30))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["httpbin.org"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -117,9 +138,19 @@ fn test_proxy_keepalive() {
 #[cfg(unix)]
 fn test_proxy_large_response() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["httpbin.org"])
-        .wall_time_limit(Duration::from_secs(60))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["httpbin.org"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(60))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -161,9 +192,19 @@ fn test_proxy_large_response() {
 #[cfg(unix)]
 fn test_proxy_connection_refused() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["localhost"])
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["localhost"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -206,9 +247,19 @@ fn test_proxy_connection_refused() {
 #[cfg(unix)]
 fn test_proxy_malformed_response() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["httpbin.org"])
-        .wall_time_limit(Duration::from_secs(10))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["httpbin.org"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(10))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -242,9 +293,19 @@ fn test_proxy_unique_ports() {
 
     for _ in 0..5 {
         let sandbox = Sandbox::builder()
-            .working_dir("/tmp")
-            .allow_network(&["example.com"])
-            .wall_time_limit(Duration::from_secs(5))
+            .filesystem(
+                FilesystemConfig::builder()
+                    .working_dir("/tmp")
+                    .build()
+                    .unwrap(),
+            )
+            .network(NetworkConfig::proxied(&["example.com"]))
+            .resources(
+                ResourceConfig::builder()
+                    .wall_time_limit(Duration::from_secs(5))
+                    .build()
+                    .unwrap(),
+            )
             .build()
             .unwrap();
 
@@ -282,9 +343,19 @@ fn test_proxy_unique_ports() {
 #[cfg(unix)]
 fn test_proxy_https_connect() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["httpbin.org"])
-        .wall_time_limit(Duration::from_secs(30))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["httpbin.org"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -327,9 +398,19 @@ fn test_proxy_https_connect() {
 #[cfg(unix)]
 fn test_proxy_concurrent_requests() {
     let sandbox = Sandbox::builder()
-        .working_dir("/tmp")
-        .allow_network(&["httpbin.org"])
-        .wall_time_limit(Duration::from_secs(60))
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .network(NetworkConfig::proxied(&["httpbin.org"]))
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(Duration::from_secs(60))
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 

@@ -1,6 +1,6 @@
 //! Network control module
 //!
-//! Provides cross-platform network isolation and domain whitelisting.
+//! Provides network isolation and domain whitelisting for sandboxed processes.
 //!
 //! ## Architecture
 //!
@@ -30,8 +30,6 @@
 //! | Platform | Network Isolation | Domain Whitelist |
 //! |----------|-------------------|------------------|
 //! | Linux    | network namespace | HTTP proxy       |
-//! | macOS    | SBPL rules        | HTTP proxy       |
-//! | Windows  | None (best effort)| HTTP proxy       |
 
 mod manager;
 mod proxy;

@@ -1,11 +1,12 @@
 //! Online Judge (OJ) Example
 //!
-//! Demonstrates using nanosandbox for competitive programming / online judge systems.
+//! Demonstrates using libsandbox for competitive programming / online judge systems.
 //! Features strict resource limits and security isolation.
 //!
 //! Run with: cargo run --example code_judge
 
-use nanosandbox::Sandbox;
+use libsandbox::config::ResourceConfig;
+use libsandbox::Sandbox;
 use std::time::Duration;
 
 /// Test case structure
@@ -18,7 +19,7 @@ fn main() {
     println!("=== Online Judge Example ===\n");
 
     // Create submission directory
-    let submission_dir = std::env::temp_dir().join("nanosandbox_judge_demo");
+    let submission_dir = std::env::temp_dir().join("libsandbox_judge_demo");
     std::fs::create_dir_all(&submission_dir).unwrap();
 
     // Problem: Sum of two numbers
@@ -36,7 +37,7 @@ print(a + b)
     std::fs::write(&solution_path, solution).unwrap();
 
     // Test cases
-    let test_cases = vec![
+    let test_cases = [
         TestCase {
             input: "1 2\n",
             expected: "3",
@@ -65,19 +66,18 @@ print(a + b)
     for (i, tc) in test_cases.iter().enumerate() {
         print!("Test #{}: ", i + 1);
 
-        // Create sandbox with code_judge preset
-        // This provides:
-        // - Read-only code directory
-        // - 256MB memory limit
-        // - 1 CPU core
-        // - 10s wall time, 5s CPU time
-        // - 10 max processes
-        // - Strict seccomp profile
-        // - No network
+        // Create sandbox with code_judge preset, override resource limits
         let sandbox = Sandbox::code_judge(&submission_dir)
-            .wall_time_limit(Duration::from_secs(2))
-            .cpu_time_limit(Duration::from_secs(1))
-            .memory_limit(128 * 1024 * 1024) // 128MB for this problem
+            .resources(
+                ResourceConfig::builder()
+                    .memory_limit(256 * 1024 * 1024)
+                    .cpu_limit(1.0)
+                    .wall_time_limit(Duration::from_secs(2))
+                    .cpu_time_limit(Duration::from_secs(1))
+                    .max_pids(10)
+                    .build()
+                    .unwrap(),
+            )
             .build()
             .expect("Failed to create sandbox");
 
@@ -161,7 +161,16 @@ print("42")  # Still output something
     std::fs::write(&solution_path, malicious).unwrap();
 
     let sandbox = Sandbox::code_judge(&submission_dir)
-        .wall_time_limit(Duration::from_secs(5))
+        .resources(
+            ResourceConfig::builder()
+                .memory_limit(256 * 1024 * 1024)
+                .cpu_limit(1.0)
+                .wall_time_limit(Duration::from_secs(5))
+                .cpu_time_limit(Duration::from_secs(5))
+                .max_pids(10)
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 

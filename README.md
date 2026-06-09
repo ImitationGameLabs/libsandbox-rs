@@ -1,150 +1,112 @@
-# nanobox
+# libsandbox
 
-A lightweight, embeddable sandbox for running untrusted code. Works on Linux, macOS, and Windows.
+A Linux-only sandbox primitives library providing namespace isolation, cgroup v2 resource limits, seccomp-BPF syscall filtering, and network isolation for sandboxed process execution.
 
-## Why?
+## What It Provides
 
-Docker is overkill for running a single script. Cloud sandboxes (E2B, etc.) add latency and cost money. nanobox uses OS-native isolation primitives directly—no VMs, no containers, no network calls.
+- **Namespace isolation** -- user, PID, mount, network, UTS, and IPC namespaces via `clone()`
+- **Filesystem isolation** -- bind mounts, tmpfs, optional rootfs with `pivot_root()`
+- **Resource limits** -- memory, CPU, wall time, CPU time, PID count, FD count via cgroup v2 and rlimit
+- **Seccomp-BPF** -- preset and custom syscall filtering profiles
+- **Network isolation** -- network namespace with optional HTTP proxy for domain-based whitelisting
 
-| Platform | How it works |
-|----------|--------------|
-| Linux | namespaces + cgroups v2 + seccomp |
-| macOS | sandbox-exec (Seatbelt/SBPL) |
-| Windows | Job Objects + Restricted Tokens |
+## What It Does NOT Do
 
-## Install
+libsandbox is a **primitives library**, not a container runtime or session manager. It does not provide:
 
-```toml
-[dependencies]
-nanobox = "0.1"
-```
+- PTY management, shell sessions, or interactive terminal handling
+- Authorization policies or scope revision tracking
+- Cross-platform support (Linux only; kernel 5.10+)
+- Language bindings (Python, Node.js, etc.)
 
-## Usage
+Consumers (such as AI agent runtimes) are expected to layer their own orchestration on top of the spawn API.
+
+## Quick Start
+
+### One-Shot Execution
 
 ```rust
-use nanobox::{Sandbox, Permission, MB};
+use libsandbox::{Sandbox, Permission, MB};
+use libsandbox::config::{FilesystemConfig, ResourceConfig, NetworkConfig};
 use std::time::Duration;
 
 let sandbox = Sandbox::builder()
-    .mount("/data/input", "/input", Permission::ReadOnly)
-    .memory_limit(256 * MB)
-    .wall_time_limit(Duration::from_secs(30))
-    .no_network()
-    .build()?;
+    .filesystem(
+        FilesystemConfig::builder()
+            .mount("/data/input", "/input", Permission::ReadOnly)
+            .working_dir("/tmp")
+            .build()
+            .unwrap()
+    )
+    .resources(
+        ResourceConfig::builder()
+            .memory_limit(256 * MB)
+            .wall_time_limit(Duration::from_secs(30))
+            .build()
+            .unwrap()
+    )
+    .network(NetworkConfig::none())
+    .build()
+    .unwrap();
 
-let result = sandbox.run("python3", &["-c", "print('hello')"])?;
-println!("{}", result.stdout);  // hello
+let result = sandbox.run("python3", &["-c", "print(\"hello\")"])?;
+assert!(result.success());
+```
+
+### Spawn (Persistent Process)
+
+```rust
+use libsandbox::{Sandbox, Stdio};
+
+let sandbox = Sandbox::builder().build().unwrap();
+let child = sandbox.spawn("bash", &["--login"])?;
+// interact via child.stdout_fd(), child.stdin_fd(), etc.
+let status = child.wait()?;
+println!("exit: {}", status.code());
 ```
 
 ### Presets
 
 ```rust
-// For AI agents that need specific API access
+// Online judge: strict limits, no network
+let sandbox = Sandbox::code_judge("/submissions/123").build()?;
+
+// AI agent: moderate limits, optional network
 let sandbox = Sandbox::agent_executor("/workspace")
-    .allow_network(&["api.openai.com", "api.anthropic.com"])
-    .build()?;
-
-// For online judges / code evaluation
-let sandbox = Sandbox::code_judge("/submission")
-    .build()?;
-
-// For data processing pipelines
-let sandbox = Sandbox::data_analysis("/input", "/output")
+    .network(NetworkConfig::proxied(&["api.openai.com"]))
     .build()?;
 ```
 
-### Python Bindings
+## Feature Highlights
 
-```python
-from nanobox import Sandbox, Permission, MB
+- **Rootless operation** -- user namespace UID/GID mapping + cgroup v2 delegation
+- **Caller-provided stdio** -- `Stdio` enum supports pipes, inheritance, null, and owned FDs (e.g., PTY slave)
+- **Dynamic mounts** -- add, remove, and remount in running sandboxes via `MountHandle`
+- **Execution diagnostics** -- `ExecutionReport` provides per-limit enforcement status and metric collection status
+- **Preset configurations** -- `code_judge`, `agent_executor`, `data_analysis`, `interactive`
 
-sandbox = (Sandbox.builder()
-    .working_dir("/tmp")
-    .memory_limit(128 * MB)
-    .build())
+## Requirements
 
-result = sandbox.run("echo", ["hello"])
-print(result.stdout)
-```
-
-Install with: `pip install nanobox`
-
-## Network Control
-
-Block all network access:
-```rust
-.no_network()
-```
-
-Allow specific domains only (uses a local HTTP proxy):
-```rust
-.allow_network(&["api.github.com", "*.amazonaws.com"])
-```
-
-## Features
-
-| | Linux | macOS | Windows |
-|---|:---:|:---:|:---:|
-| Memory limits | ✓ | ~ | ✓ |
-| CPU limits | ✓ | - | ✓ |
-| Process limits | ✓ | - | ✓ |
-| Wall-clock timeout | ✓ | ✓ | ✓ |
-| Filesystem isolation | ✓ | ✓ | ~ |
-| Network isolation | ✓ | ✓ | - |
-| Syscall filtering | ✓ | ~ | - |
-
-`✓` = full support, `~` = partial, `-` = not available
+- Linux kernel 5.10+ (for cgroup v2 and pidfd)
+- x86_64 (for seccomp BPF compilation)
+- cgroup v2 mounted at `/sys/fs/cgroup`
+- Unprivileged user namespaces enabled (`kernel.unprivileged_userns_clone=1`)
 
 ## Building
 
 ```bash
 cargo build
 cargo test
-cargo bench --no-run  # compile benchmarks
+cargo bench
 ```
 
-Run on Linux with cgroups v2. On macOS, sandbox-exec is available by default. Windows needs no special setup.
+Tests require the kernel prerequisites listed above.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) - Platform internals and design decisions
-- [API Reference](docs/API.md) - Complete API documentation
-- [Benchmarks](docs/BENCHMARKS.md) - Performance comparison with other solutions
-
-### Platform Details
-
-- [Linux Implementation](docs/platform-linux.md) - Namespaces, cgroups v2, seccomp
-- [macOS Implementation](docs/platform-macos.md) - sandbox-exec, SBPL profiles
-- [Windows Implementation](docs/platform-windows.md) - Job Objects, Restricted Tokens
-
-## References
-
-### Linux
-
-- [namespaces(7)](https://man7.org/linux/man-pages/man7/namespaces.7.html) - Linux namespaces overview
-- [cgroups v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) - Unified control group hierarchy
-- [seccomp(2)](https://man7.org/linux/man-pages/man2/seccomp.2.html) - Syscall filtering
-- [bubblewrap](https://github.com/containers/bubblewrap) - Unprivileged sandboxing tool
-
-### macOS
-
-- [App Sandbox Design Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/AppSandboxDesignGuide/) - Apple's sandboxing documentation
-- [SBPL Reference](https://reverse.put.as/wp-content/uploads/2011/09/Apple-Sandbox-Guide-v1.0.pdf) - Sandbox Profile Language syntax
-- [sandbox-exec(1)](https://www.manpagez.com/man/1/sandbox-exec/) - Command-line sandbox tool
-
-### Windows
-
-- [Job Objects](https://docs.microsoft.com/en-us/windows/win32/procthread/job-objects) - Process group management
-- [Access Tokens](https://docs.microsoft.com/en-us/windows/win32/secauthz/access-tokens) - Security tokens
-- [AppContainer Isolation](https://docs.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) - UWP-style isolation
-
-### Related Projects
-
-- [gVisor](https://github.com/google/gvisor) - Application kernel for containers
-- [Firecracker](https://github.com/firecracker-microvm/firecracker) - Lightweight microVMs
-- [nsjail](https://github.com/google/nsjail) - Light-weight process isolation tool
-- [minijail](https://chromium.googlesource.com/chromiumos/platform/minijail) - Chrome OS sandboxing
-- [E2B](https://e2b.dev/) - Cloud code interpreters
+- [Architecture](docs/ARCHITECTURE.md) -- internal design and implementation details
+- [API Reference](docs/API.md) -- complete API documentation
+- [Benchmarks](docs/BENCHMARKS.md) -- performance data and comparisons
 
 ## License
 

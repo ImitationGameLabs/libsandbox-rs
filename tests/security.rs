@@ -10,10 +10,6 @@ mod resource_exhaustion;
 #[path = "security/syscall_filter.rs"]
 mod syscall_filter;
 
-#[cfg(target_os = "macos")]
-#[path = "security/sbpl_rules.rs"]
-mod sbpl_rules;
-
 // P0: Process management tests (zombie, process groups, signals)
 #[cfg(unix)]
 #[path = "security/process_management.rs"]

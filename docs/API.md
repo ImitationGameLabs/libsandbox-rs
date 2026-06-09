@@ -1,57 +1,120 @@
-# Nanobox API Reference
+# libsandbox API Reference
 
-Complete API documentation for the nanobox sandbox library.
+Complete API documentation for the libsandbox sandbox library.
 
 ## Table of Contents
 
+- [Crate-Level Exports](#crate-level-exports)
 - [Sandbox](#sandbox)
 - [SandboxBuilder](#sandboxbuilder)
-- [ExecutionResult](#executionresult)
-- [Configuration Types](#configuration-types)
+- [Preset Configurations](#preset-configurations)
+- [SpawnBuilder](#spawnbuilder)
+- [Stdio](#stdio)
+- [Child](#child)
+- [ExitStatus](#exitstatus)
+- [MountHandle and DynamicMount](#mounthandle-and-dynamicmount)
+- [Domain Configuration Types](#domain-configuration-types)
+  - [FilesystemConfig](#filesystemconfig)
+  - [ResourceConfig](#resourceconfig)
+  - [NetworkConfig](#networkconfig)
+  - [SecurityConfig](#securityconfig)
+  - [EnvironmentConfig](#environmentconfig)
+- [Seccomp Customization](#seccomp-customization)
+- [Result Types](#result-types)
 - [Error Types](#error-types)
-- [Constants](#constants)
-- [Platform Functions](#platform-functions)
+- [Free Functions and Constants](#free-functions-and-constants)
+- [Thread Safety](#thread-safety)
+
+---
+
+## Crate-Level Exports
+
+The `libsandbox` crate re-exports the following types at the root level:
+
+```rust
+// Core types
+pub use sandbox::{Sandbox, SpawnBuilder};
+pub use builder::{SandboxBuilder, SandboxConfig};
+pub use process::{Child, ExitStatus};
+pub use stdio::Stdio;
+pub use mount::{DynamicMount, MountHandle};
+
+// Result and diagnostics
+pub use result::{
+    ExecutionDiagnostics, ExecutionReport, ExecutionResult,
+    LimitDiagnostics, LimitStatus, MetricDiagnostics, MetricStatus,
+};
+
+// Error types
+pub use error::{Result, SandboxError};
+
+// Configuration types (also available via libsandbox::config::*)
+pub use config::{
+    CgroupLimitRequests, EnvironmentBuilder, EnvironmentConfig, ExecutionPolicy,
+    FilesystemBuilder, FilesystemConfig, Mount, MountOptions, NetworkBuilder,
+    NetworkConfig, NetworkMode, Permission, ResourceConfig, ResourceEnforcement,
+    SeccompProfile, SecurityBuilder, SecurityConfig,
+};
+
+// Constants
+pub const KB: u64 = 1024;
+pub const MB: u64 = 1024 * 1024;
+pub const GB: u64 = 1024 * 1024 * 1024;
+```
+
+**Note:** `ResourceBuilder` is accessible via `libsandbox::config::ResourceBuilder` (not re-exported at the crate root). `SeccompFilter`, `SeccompFilterBuilder`, and `SeccompAction` are accessible via `libsandbox::seccomp::*`.
 
 ---
 
 ## Sandbox
 
-The main sandbox execution unit.
+The main entry point for sandbox operations.
 
 ### Creating a Sandbox
 
 ```rust
-use nanobox::{Sandbox, Permission, MB};
+use libsandbox::{Sandbox, Permission, MB};
+use libsandbox::config::{FilesystemConfig, ResourceConfig, NetworkConfig};
 use std::time::Duration;
 
-// Using builder
 let sandbox = Sandbox::builder()
-    .working_dir("/tmp")
-    .memory_limit(512 * MB)
-    .wall_time_limit(Duration::from_secs(30))
-    .build()?;
-
-// Using presets
-let sandbox = Sandbox::code_judge("/submissions/123").build()?;
+    .filesystem(
+        FilesystemConfig::builder()
+            .mount("/data/input", "/input", Permission::ReadOnly)
+            .working_dir("/tmp")
+            .build()
+            .unwrap()
+    )
+    .resources(
+        ResourceConfig::builder()
+            .memory_limit(256 * MB)
+            .wall_time_limit(Duration::from_secs(30))
+            .build()
+            .unwrap()
+    )
+    .network(NetworkConfig::none())
+    .build()
+    .unwrap();
 ```
 
 ### Methods
 
-#### `run`
-
-Execute a command in the sandbox.
+#### `builder`
 
 ```rust
-pub fn run(&self, command: &str, args: &[&str]) -> Result<ExecutionResult>
+pub fn builder() -> SandboxBuilder
 ```
 
-**Parameters:**
-- `command` - Path to executable or command name
-- `args` - Command arguments
+Create a new `SandboxBuilder` with default configuration.
 
-**Returns:** `Result<ExecutionResult>`
+#### `run`
 
-**Example:**
+```rust
+pub fn run(&self, cmd: &str, args: &[&str]) -> Result<ExecutionResult>
+```
+
+Execute a command in the sandbox. Blocks until the command completes or times out.
+
 ```rust
 let result = sandbox.run("python3", &["-c", "print('hello')"])?;
 println!("stdout: {}", result.stdout);
@@ -60,114 +123,104 @@ println!("exit code: {}", result.exit_code);
 
 #### `run_with_input`
 
-Execute a command with stdin input.
-
 ```rust
 pub fn run_with_input(
     &self,
-    command: &str,
+    cmd: &str,
     args: &[&str],
     stdin: Option<&[u8]>,
 ) -> Result<ExecutionResult>
 ```
 
-**Example:**
+Execute a command with optional stdin input.
+
 ```rust
-let input = b"hello world";
-let result = sandbox.run_with_input("cat", &[], Some(input))?;
+let result = sandbox.run_with_input("cat", &[], Some(b"hello world"))?;
 assert_eq!(result.stdout, "hello world");
+```
+
+#### `run_detailed`
+
+```rust
+pub fn run_detailed(&self, cmd: &str, args: &[&str]) -> Result<ExecutionReport>
+```
+
+Execute a command and return an `ExecutionReport` containing both the result and diagnostics about limit enforcement and metric collection.
+
+```rust
+let report = sandbox.run_detailed("python3", &["script.py"])?;
+println!("exit code: {}", report.result.exit_code);
+if let Some(summary) = report.diagnostics.degradation_summary() {
+    eprintln!("Diagnostics: {}", summary);
+}
+```
+
+#### `run_with_input_detailed`
+
+```rust
+pub fn run_with_input_detailed(
+    &self,
+    cmd: &str,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+) -> Result<ExecutionReport>
+```
+
+Execute a command with stdin and return an `ExecutionReport`.
+
+#### `spawn`
+
+```rust
+pub fn spawn(&self, cmd: &str, args: &[&str]) -> Result<Child>
+```
+
+Spawn a sandboxed process and return a `Child` handle. Defaults: stdin to `Null`, stdout to `Pipe`, stderr to `Pipe`.
+
+```rust
+let child = sandbox.spawn("bash", &["--login"])?;
+println!("child pid: {}", child.pid());
+let status = child.wait()?;
+println!("exit: {}", status.code());
+```
+
+#### `build_spawn`
+
+```rust
+pub fn build_spawn(&self, cmd: &str, args: &[&str]) -> SpawnBuilder<'_>
+```
+
+Begin building a spawned process with custom stdio configuration. Returns a `SpawnBuilder`.
+
+```rust
+use libsandbox::Stdio;
+
+let child = sandbox.build_spawn("cat", &[])
+    .stdin(Stdio::Pipe)
+    .stdout(Stdio::Pipe)
+    .start()?;
 ```
 
 #### `id`
 
-Get the unique sandbox identifier.
-
 ```rust
-pub fn id(&self) -> u64
+pub fn id(&self) -> &str
 ```
 
-**Example:**
-```rust
-println!("Sandbox ID: {}", sandbox.id());
-```
+Get the sandbox's unique identifier.
 
-### Static Factory Methods (Presets)
-
-#### `Sandbox::code_judge`
-
-Preset for code judging systems. Strict limits, no network.
+#### `platform`
 
 ```rust
-pub fn code_judge(code_dir: impl Into<PathBuf>) -> SandboxBuilder
+pub fn platform(&self) -> &'static str
 ```
 
-**Configuration:**
-- Memory: 256 MB
-- Wall time: 10 seconds
-- Max PIDs: 10
-- Max open files: 20
-- Network: None
-- Security: Strict
-
-**Example:**
-```rust
-let sandbox = Sandbox::code_judge("/submissions/123")
-    .wall_time_limit(Duration::from_secs(5))  // Override default
-    .build()?;
-```
-
-#### `Sandbox::agent_executor`
-
-Preset for AI agent code execution. Moderate limits, optional network.
-
-```rust
-pub fn agent_executor(workspace: impl Into<PathBuf>) -> SandboxBuilder
-```
-
-**Configuration:**
-- Memory: 1 GB
-- Wall time: 60 seconds
-- Max PIDs: 50
-- Network: None (add with `.allow_network()`)
-- Security: Standard
-
-#### `Sandbox::data_analysis`
-
-Preset for data analysis workloads.
-
-```rust
-pub fn data_analysis(
-    input_dir: impl Into<PathBuf>,
-    output_dir: impl Into<PathBuf>,
-) -> SandboxBuilder
-```
-
-**Configuration:**
-- Memory: 2 GB
-- Wall time: 300 seconds
-- Input: Read-only mount
-- Output: Read-write mount
-- Network: None
-
-#### `Sandbox::interactive`
-
-Preset for interactive/REPL sessions.
-
-```rust
-pub fn interactive(workspace: impl Into<PathBuf>) -> SandboxBuilder
-```
-
-**Configuration:**
-- Memory: 512 MB
-- Wall time: 3600 seconds (1 hour)
-- Workspace: Read-write
-- Security: Permissive
+Get the platform name. Always returns `"linux"`.
 
 ---
 
 ## SandboxBuilder
 
-Builder for configuring sandbox parameters.
+Builder for composing domain configs into a sandbox.
 
 ### Creation
 
@@ -177,334 +230,659 @@ let builder = Sandbox::builder();
 let builder = SandboxBuilder::new();
 ```
 
-### Configuration Methods
+### Domain Consume Methods
 
-All methods return `Self` for chaining.
-
-#### `working_dir`
-
-Set the working directory for command execution.
+Each method accepts a fully validated domain config struct and returns `Self` for chaining.
 
 ```rust
-pub fn working_dir(self, path: impl Into<PathBuf>) -> Self
+pub fn filesystem(self, config: FilesystemConfig) -> Self
+pub fn resources(self, config: ResourceConfig) -> Self
+pub fn network(self, config: NetworkConfig) -> Self
+pub fn security(self, config: SecurityConfig) -> Self
+pub fn environment(self, config: EnvironmentConfig) -> Self
 ```
 
-**Example:**
-```rust
-builder.working_dir("/tmp/sandbox")
-```
-
-#### `mount`
-
-Mount a host path into the sandbox.
-
-```rust
-pub fn mount(
-    self,
-    source: impl Into<PathBuf>,
-    target: impl Into<PathBuf>,
-    permission: Permission,
-) -> Self
-```
-
-**Parameters:**
-- `source` - Host path
-- `target` - Path inside sandbox
-- `permission` - `ReadOnly` or `ReadWrite`
-
-**Example:**
-```rust
-builder
-    .mount("/data/input", "/input", Permission::ReadOnly)
-    .mount("/data/output", "/output", Permission::ReadWrite)
-```
-
-#### `tmpfs`
-
-Mount a temporary filesystem (RAM-backed).
-
-```rust
-pub fn tmpfs(self, path: impl Into<PathBuf>, size_bytes: u64) -> Self
-```
-
-**Example:**
-```rust
-builder.tmpfs("/tmp", 64 * MB)
-```
-
-#### `memory_limit`
-
-Set maximum memory usage in bytes.
-
-```rust
-pub fn memory_limit(self, bytes: u64) -> Self
-```
-
-**Platform behavior:**
-- Linux: Hard limit via cgroups (process killed on exceed)
-- macOS: Soft limit via setrlimit (may be exceeded)
-- Windows: Hard limit via Job Object
-
-**Example:**
-```rust
-builder.memory_limit(512 * MB)
-```
-
-#### `cpu_limit`
-
-Set CPU core limit.
-
-```rust
-pub fn cpu_limit(self, cpus: f64) -> Self
-```
-
-**Platform behavior:**
-- Linux: Hard limit via cgroups cpu.max
-- macOS: Not supported
-- Windows: Hard limit via Job Object
-
-**Example:**
-```rust
-builder.cpu_limit(1.5)  // 1.5 CPU cores
-```
-
-#### `wall_time_limit`
-
-Set maximum wall clock time.
-
-```rust
-pub fn wall_time_limit(self, duration: Duration) -> Self
-```
-
-**Example:**
-```rust
-builder.wall_time_limit(Duration::from_secs(30))
-```
-
-#### `max_pids`
-
-Set maximum number of processes/threads.
-
-```rust
-pub fn max_pids(self, n: u32) -> Self
-```
-
-**Platform behavior:**
-- Linux: Hard limit via cgroups pids.max
-- macOS: Not enforced (RLIMIT_NPROC affects entire user)
-- Windows: Hard limit via Job Object
-
-#### `max_open_files`
-
-Set maximum number of open file descriptors.
-
-```rust
-pub fn max_open_files(self, n: u32) -> Self
-```
-
-#### `no_network`
-
-Disable all network access.
-
-```rust
-pub fn no_network(self) -> Self
-```
-
-**Platform behavior:**
-- Linux: Network namespace isolation
-- macOS: SBPL network deny rules
-- Windows: Not fully supported
-
-#### `allow_network`
-
-Allow network access only to specified domains.
-
-```rust
-pub fn allow_network(self, domains: &[&str]) -> Self
-```
-
-**Supports wildcards:**
-- `"api.example.com"` - Exact match
-- `"*.example.com"` - Wildcard subdomain
-
-**Implementation:** HTTP proxy with domain whitelist.
-
-**Example:**
-```rust
-builder.allow_network(&["api.openai.com", "*.github.com"])
-```
-
-#### `env`
-
-Set an environment variable.
-
-```rust
-pub fn env(self, key: impl Into<String>, value: impl Into<String>) -> Self
-```
-
-**Example:**
-```rust
-builder
-    .env("PATH", "/usr/bin:/bin")
-    .env("HOME", "/tmp")
-```
-
-#### `hostname`
-
-Set the hostname (Linux only).
-
-```rust
-pub fn hostname(self, name: impl Into<String>) -> Self
-```
-
-#### `seccomp_profile`
-
-Set the security profile.
-
-```rust
-pub fn seccomp_profile(self, profile: SeccompProfile) -> Self
-```
-
-**Profiles:**
-- `Strict` - Minimal syscalls allowed
-- `Standard` - Common syscalls allowed
-- `Permissive` - Most syscalls allowed
-- `Disabled` - No restrictions
-
-#### `build`
-
-Create the sandbox instance.
+### build
 
 ```rust
 pub fn build(self) -> Result<Sandbox>
 ```
 
-**Validates configuration and returns error if invalid.**
+Validate the composed configuration and create the `Sandbox`. Returns an error if the platform does not support the requested features.
 
 ---
 
-## ExecutionResult
+## Preset Configurations
 
-Result of command execution.
+Static factory methods on `Sandbox` that return a `SandboxBuilder` pre-configured for common use cases. Callers can override any domain by passing a replacement config.
 
-### Fields
+#### `Sandbox::code_judge`
 
 ```rust
-pub struct ExecutionResult {
-    /// Standard output (lossy UTF-8)
-    pub stdout: String,
+pub fn code_judge(code_dir: impl Into<PathBuf>) -> SandboxBuilder
+```
 
-    /// Standard error (lossy UTF-8)
-    pub stderr: String,
+Preset for online judge systems. Strict limits, no network.
 
-    /// Process exit code (0 = success)
-    pub exit_code: i32,
+```rust
+let sandbox = Sandbox::code_judge("/submissions/123")
+    .resources(
+        ResourceConfig::builder()
+            .wall_time_limit(Duration::from_secs(5))
+            .build()
+            .unwrap()
+    )
+    .build()?;
+```
 
-    /// Wall clock duration
-    pub duration: Duration,
+#### `Sandbox::agent_executor`
 
-    /// CPU time (user + system), if available
-    pub cpu_time: Option<Duration>,
+```rust
+pub fn agent_executor(workspace: impl Into<PathBuf>) -> SandboxBuilder
+```
 
-    /// Peak memory usage in bytes, if available
-    pub peak_memory: Option<u64>,
+Preset for AI agent code execution. Moderate limits, optional network.
 
-    /// True if killed due to timeout
-    pub killed_by_timeout: bool,
+#### `Sandbox::data_analysis`
 
-    /// True if killed due to out-of-memory
-    pub killed_by_oom: bool,
+```rust
+pub fn data_analysis(
+    input_dir: impl Into<PathBuf>,
+    output_dir: impl Into<PathBuf>,
+) -> SandboxBuilder
+```
 
-    /// Signal number if killed by signal
-    pub signal: Option<i32>,
+Preset for data analysis workloads. Higher memory and time limits.
+
+#### `Sandbox::interactive`
+
+```rust
+pub fn interactive(workspace: impl Into<PathBuf>) -> SandboxBuilder
+```
+
+Preset for interactive and REPL sessions. Permissive security profile.
+
+---
+
+## SpawnBuilder
+
+Builder for configuring a spawned child process. Obtained via `Sandbox::build_spawn()`.
+
+### Methods
+
+```rust
+pub fn stdin(self, stdio: Stdio) -> Self
+pub fn stdout(self, stdio: Stdio) -> Self
+pub fn stderr(self, stdio: Stdio) -> Self
+pub fn start(self) -> Result<Child>
+```
+
+Each stdio method sets the corresponding stream configuration. `start()` performs the actual `clone()` and returns a `Child` handle.
+
+```rust
+use libsandbox::{Sandbox, Stdio};
+
+let child = sandbox.build_spawn("bash", &[])
+    .stdin(Stdio::Pipe)
+    .stdout(Stdio::Pipe)
+    .stderr(Stdio::Inherit)
+    .start()?;
+```
+
+---
+
+## Stdio
+
+Controls how the child process's standard streams are connected. Mirrors `std::process::Stdio`.
+
+```rust
+pub enum Stdio {
+    Inherit,              // Inherit from parent process
+    Null,                 // Redirect to /dev/null
+    Pipe,                 // Create a pipe pair
+    Owned(OwnedFd),       // Use a caller-provided fd (e.g., PTY slave)
 }
+```
+
+**Defaults:** stdin defaults to `Null`, stdout and stderr default to `Pipe`.
+
+`Stdio` implements `From<OwnedFd>` and `From<std::fs::File>`.
+
+```rust
+use std::os::unix::io::AsFd;
+
+// Pass a PTY slave fd for interactive use
+let slave_fd: OwnedFd = /* ... */;
+let child = sandbox.build_spawn("bash", &[])
+    .stdin(Stdio::Owned(slave_fd))
+    .stdout(Stdio::Pipe)
+    .start()?;
+```
+
+---
+
+## Child
+
+A handle to a sandboxed child process. Owns the PID, pipe fds, cgroup, and namespace fds.
+
+### Methods
+
+| Method           | Signature                                                  | Description                             |
+| ---------------- | ---------------------------------------------------------- | --------------------------------------- |
+| `pid`            | `pub fn pid(&self) -> u32`                                 | Child PID in parent's namespace         |
+| `stdin_fd`       | `pub fn stdin_fd(&self) -> Option<&OwnedFd>`               | Parent-end stdin pipe fd                |
+| `stdout_fd`      | `pub fn stdout_fd(&self) -> Option<&OwnedFd>`              | Parent-end stdout pipe fd               |
+| `stderr_fd`      | `pub fn stderr_fd(&self) -> Option<&OwnedFd>`              | Parent-end stderr pipe fd               |
+| `cgroup`         | `pub fn cgroup(&self) -> Option<&CgroupManager>`           | Access cgroup for metric collection     |
+| `mount_handle`   | `pub fn mount_handle(&self) -> Result<MountHandle>`        | Get a handle for dynamic mounts         |
+| `kill`           | `pub fn kill(&self) -> Result<()>`                         | Send SIGKILL via pidfd or process group |
+| `try_wait`       | `pub fn try_wait(&mut self) -> Result<Option<ExitStatus>>` | Non-blocking exit check                 |
+| `wait`           | `pub fn wait(self) -> Result<ExitStatus>`                  | Block until exit; consumes self         |
+| `detach`         | `pub fn detach(self) -> u32`                               | Release without killing; returns PID    |
+| `close_stdin`    | `pub fn close_stdin(&mut self)`                            | Close stdin pipe (idempotent)           |
+| `take_stdin_fd`  | `pub fn take_stdin_fd(&mut self) -> Option<OwnedFd>`       | Take ownership of stdin fd              |
+| `take_stdout_fd` | `pub fn take_stdout_fd(&mut self) -> Option<OwnedFd>`      | Take ownership of stdout fd             |
+| `take_stderr_fd` | `pub fn take_stderr_fd(&mut self) -> Option<OwnedFd>`      | Take ownership of stderr fd             |
+
+### Drop Behavior
+
+If `Child` is dropped without calling `wait()` or `detach()`, the destructor kills the child process (SIGKILL) and waits for it to prevent zombie processes.
+
+### Example
+
+```rust
+let mut child = sandbox.build_spawn("cat", &[])
+    .stdin(Stdio::Pipe)
+    .start()?;
+
+// Write to stdin
+if let Some(fd) = child.stdin_fd() {
+    nix::unistd::write(fd.as_fd(), b"hello\n")?;
+}
+child.close_stdin();
+
+// Wait for exit
+let status = child.wait()?;
+println!("exit: {}", status.code());
+```
+
+---
+
+## ExitStatus
+
+The exit status of a sandboxed process.
+
+```rust
+pub struct ExitStatus { /* fields are private */ }
 ```
 
 ### Methods
 
-#### `success`
+| Method    | Signature                             | Description                                   |
+| --------- | ------------------------------------- | --------------------------------------------- |
+| `code`    | `pub fn code(&self) -> i32`           | Exit code (0 = success; 128+signal if killed) |
+| `signal`  | `pub fn signal(&self) -> Option<i32>` | Signal number if killed by signal             |
+| `success` | `pub fn success(&self) -> bool`       | True if exit code is 0 and no signal          |
 
-Check if execution was successful.
+`ExitStatus` implements `Display` and `Clone`.
+
+---
+
+## MountHandle and DynamicMount
+
+### MountHandle
+
+Obtained via `Child::mount_handle()`. Allows mount operations on a running sandbox by entering the child's mount namespace via pre-opened file descriptors.
+
+| Method         | Signature                                                                                               | Description             |
+| -------------- | ------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `add_mount`    | `pub fn add_mount(&self, source: &Path, target: &Path, permission: Permission) -> Result<DynamicMount>` | Bind-mount a host path  |
+| `add_tmpfs`    | `pub fn add_tmpfs(&self, target: &Path, size_bytes: u64) -> Result<DynamicMount>`                       | Add a tmpfs mount       |
+| `remount`      | `pub fn remount(&self, target: &Path, permission: Permission) -> Result<()>`                            | Change mount permission |
+| `remove_mount` | `pub fn remove_mount(&self, handle: DynamicMount) -> Result<()>`                                        | Remove a dynamic mount  |
+
+### DynamicMount
+
+RAII guard for a dynamic mount. Dropping without calling `remove()` logs a warning.
+
+| Method   | Signature                                | Description                          |
+| -------- | ---------------------------------------- | ------------------------------------ |
+| `remove` | `pub fn remove(&mut self) -> Result<()>` | Remove the mount (lazy `MNT_DETACH`) |
+| `target` | `pub fn target(&self) -> &Path`          | Target path inside the sandbox       |
+| `source` | `pub fn source(&self) -> Option<&Path>`  | Host source path (None for tmpfs)    |
+
+---
+
+## Domain Configuration Types
+
+Each domain has its own builder with per-field validation. Builders are accessed via the config type's `::builder()` method.
+
+### FilesystemConfig
+
+```rust
+pub struct FilesystemConfig {
+    pub mounts: Vec<Mount>,
+    pub tmpfs_mounts: Vec<(PathBuf, u64)>,
+    pub working_dir: PathBuf,      // default: "/"
+    pub rootfs: Option<PathBuf>,   // default: None
+}
+```
+
+#### FilesystemBuilder
+
+```rust
+FilesystemConfig::builder()
+    .mount("/host/path", "/sandbox/path", Permission::ReadOnly)
+    .mount("/host/data", "/data", Permission::ReadWrite)
+    .tmpfs("/tmp", 64 * MB)
+    .working_dir("/workspace")
+    .rootfs("/path/to/rootfs")
+    .build()
+```
+
+| Method                              | Description                          |
+| ----------------------------------- | ------------------------------------ |
+| `mount(source, target, permission)` | Add a bind mount                     |
+| `tmpfs(path, size_bytes)`           | Add a tmpfs mount (size must be > 0) |
+| `working_dir(path)`                 | Set working directory                |
+| `rootfs(path)`                      | Set root filesystem for pivot_root   |
+| `build()`                           | Validate and create config           |
+
+#### Mount
+
+```rust
+pub struct Mount {
+    pub source: PathBuf,
+    pub target: PathBuf,
+    pub permission: Permission,
+}
+```
+
+#### Permission
+
+```rust
+pub enum Permission {
+    ReadOnly,
+    ReadWrite,
+    Custom(MountOptions),
+}
+```
+
+#### MountOptions
+
+```rust
+pub struct MountOptions {
+    pub read_only: bool,    // default: false
+    pub no_exec: bool,      // default: false
+    pub no_suid: bool,      // default: true
+    pub no_dev: bool,       // default: true
+}
+```
+
+`Permission` and `MountOptions` implement `Serialize` and `Deserialize`.
+
+### ResourceConfig
+
+```rust
+pub struct ResourceConfig {
+    pub memory_limit: Option<u64>,           // bytes, default: None
+    pub cpu_limit: Option<f64>,              // cores, default: None
+    pub max_pids: Option<u32>,               // default: Some(64)
+    pub wall_time_limit: Option<Duration>,   // default: None
+    pub cpu_time_limit: Option<Duration>,    // default: None
+    pub max_file_size: Option<u64>,          // bytes, default: None
+    pub max_open_files: Option<u32>,         // default: None
+}
+```
+
+#### ResourceConfig Methods
+
+| Method         | Signature                             | Description                                   |
+| -------------- | ------------------------------------- | --------------------------------------------- |
+| `needs_cgroup` | `pub fn needs_cgroup(&self) -> bool`  | Whether any cgroup-backed limit is configured |
+| `builder`      | `pub fn builder() -> ResourceBuilder` | Create a new builder                          |
+
+#### ResourceBuilder
+
+Accessed via `libsandbox::config::ResourceBuilder`:
+
+```rust
+use libsandbox::config::ResourceBuilder;
+use libsandbox::ResourceEnforcement;
+
+ResourceBuilder::new()
+    .memory_limit(512 * MB)
+    .cpu_limit(2.0)
+    .wall_time_limit(Duration::from_secs(30))
+    .cpu_time_limit(Duration::from_secs(20))
+    .max_pids(64)
+    .max_file_size(100 * MB)
+    .max_open_files(256)
+    .resource_enforcement(ResourceEnforcement::BestEffort)
+    .build()
+```
+
+| Method                       | Description                                               |
+| ---------------------------- | --------------------------------------------------------- |
+| `memory_limit(bytes)`        | Hard memory limit via cgroup `memory.max`                 |
+| `cpu_limit(cpus)`            | CPU core limit via cgroup `cpu.max`                       |
+| `wall_time_limit(duration)`  | Wall-clock timeout                                        |
+| `cpu_time_limit(duration)`   | CPU time limit                                            |
+| `max_pids(n)`                | Process limit via cgroup `pids.max`                       |
+| `max_file_size(bytes)`       | Maximum file size via RLIMIT_FSIZE                        |
+| `max_open_files(n)`          | FD limit via RLIMIT_NOFILE                                |
+| `resource_enforcement(mode)` | Set enforcement mode (default: Strict)                    |
+| `build()`                    | Validate and create config (rejects zero/negative limits) |
+
+#### ResourceEnforcement
+
+```rust
+pub enum ResourceEnforcement {
+    Strict,       // Fail if a limit cannot be enforced (default)
+    BestEffort,   // Degrade gracefully, report via diagnostics
+}
+```
+
+#### ExecutionPolicy
+
+```rust
+pub struct ExecutionPolicy {
+    pub resource_enforcement: ResourceEnforcement,
+    pub cgroup_limit_requests: CgroupLimitRequests,
+}
+```
+
+#### CgroupLimitRequests
+
+```rust
+pub struct CgroupLimitRequests {
+    pub memory: bool,
+    pub cpu: bool,
+    pub pids: bool,
+}
+```
+
+Automatically set to `true` when the corresponding limit is configured via `ResourceBuilder`.
+
+### NetworkConfig
+
+```rust
+pub struct NetworkConfig {
+    pub mode: NetworkMode,
+}
+```
+
+#### Shorthand Constructors
+
+```rust
+NetworkConfig::none()                          // No network (default)
+NetworkConfig::host()                          // Full host network
+NetworkConfig::proxied(&["api.example.com"])   // Proxied with domain whitelist
+```
+
+#### NetworkBuilder
+
+```rust
+NetworkConfig::builder()
+    .proxied(&["api.example.com", "*.github.com"])
+    .build()
+```
+
+| Method             | Description                      |
+| ------------------ | -------------------------------- |
+| `none()`           | No network access                |
+| `host()`           | Full host network access         |
+| `proxied(domains)` | HTTP proxy with domain whitelist |
+| `build()`          | Create config                    |
+
+#### NetworkMode
+
+```rust
+pub enum NetworkMode {
+    None,                                    // No network (default)
+    Host,                                    // Full host network
+    Proxied { allowed_domains: Vec<String> }, // Proxy with domain whitelist
+}
+```
+
+Domain patterns support exact match (`api.example.com`) and wildcard subdomains (`*.example.com`).
+
+### SecurityConfig
+
+```rust
+pub struct SecurityConfig {
+    pub seccomp_profile: SeccompProfile,   // default: Standard
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+}
+```
+
+#### SecurityBuilder
+
+```rust
+SecurityConfig::builder()
+    .seccomp_profile(SeccompProfile::Strict)
+    .uid(1000)
+    .gid(1000)
+    .build()
+```
+
+| Method                     | Description                |
+| -------------------------- | -------------------------- |
+| `seccomp_profile(profile)` | Set seccomp profile        |
+| `uid(uid)`                 | Set UID inside the sandbox |
+| `gid(gid)`                 | Set GID inside the sandbox |
+| `build()`                  | Create config              |
+
+#### SeccompProfile
+
+```rust
+pub enum SeccompProfile {
+    Disabled,                          // No filter
+    Strict,                            // Minimal syscall set
+    Standard,                          // Common safe syscalls (default)
+    Permissive,                        // Most syscalls, block dangerous ones
+    Custom(SeccompFilter),             // User-defined filter
+}
+```
+
+### EnvironmentConfig
+
+```rust
+pub struct EnvironmentConfig {
+    pub env: HashMap<String, String>,
+    pub clear_env: bool,       // default: true
+    pub hostname: String,      // default: "sandbox"
+}
+```
+
+#### EnvironmentBuilder
+
+```rust
+EnvironmentConfig::builder()
+    .env("PATH", "/usr/bin:/bin")
+    .env("HOME", "/tmp")
+    .envs(vec![("LANG".into(), "en_US.UTF-8".into())])
+    .clear_env(true)
+    .hostname("mybox")
+    .build()
+```
+
+| Method             | Description                                       |
+| ------------------ | ------------------------------------------------- |
+| `env(key, value)`  | Set a single env var                              |
+| `envs(pairs)`      | Set multiple env vars                             |
+| `clear_env(clear)` | Whether to clear the parent's env (default: true) |
+| `hostname(name)`   | Set the hostname inside the sandbox               |
+| `build()`          | Create config                                     |
+
+---
+
+## Seccomp Customization
+
+For fine-grained syscall filtering beyond the preset profiles, use `SeccompFilterBuilder` (accessible via `libsandbox::seccomp::SeccompFilterBuilder`):
+
+```rust
+use libsandbox::seccomp::SeccompFilterBuilder;
+use libsandbox::SeccompProfile;
+
+let filter = SeccompFilterBuilder::standard()
+    .deny("ptrace")?                       // KillProcess (default deny action)
+    .deny_with_errno("mount", libc::EPERM)? // Return EPERM instead
+    .allow("read")?
+    .build()?;
+
+let sandbox = Sandbox::builder()
+    .security(
+        SecurityConfig::builder()
+            .seccomp_profile(SeccompProfile::Custom(filter))
+            .build()?
+    )
+    .build()?;
+```
+
+### SeccompFilterBuilder Methods
+
+| Method                            | Returns                 | Description                                                 |
+| --------------------------------- | ----------------------- | ----------------------------------------------------------- |
+| `new(default_action)`             | `Self`                  | Create builder with a default action for unmatched syscalls |
+| `strict()`                        | `Self`                  | Start with the Strict preset                                |
+| `standard()`                      | `Self`                  | Start with the Standard preset                              |
+| `permissive()`                    | `Self`                  | Start with the Permissive preset                            |
+| `default_action(action)`          | `Self`                  | Change the default action for unmatched syscalls            |
+| `allow(syscall)`                  | `Result<Self>`          | Allow a syscall                                             |
+| `deny(syscall)`                   | `Result<Self>`          | Deny a syscall with KillProcess                             |
+| `deny_with_errno(syscall, errno)` | `Result<Self>`          | Deny a syscall, return the given errno                      |
+| `log(syscall)`                    | `Result<Self>`          | Allow a syscall but log it                                  |
+| `allow_all(syscalls)`             | `Result<Self>`          | Add Allow rules for each syscall in the slice               |
+| `deny_all(syscalls)`              | `Result<Self>`          | Add KillProcess rules for each syscall in the slice         |
+| `remove(syscall)`                 | `Result<Self>`          | Remove the rule for a syscall                               |
+| `build()`                         | `Result<SeccompFilter>` | Compile into a `SeccompFilter`                              |
+
+### SeccompFilter
+
+An opaque compiled BPF filter. Created by `SeccompFilterBuilder::build()`. Accessible via `libsandbox::seccomp::SeccompFilter`.
+
+| Method           | Signature                                       | Description                               |
+| ---------------- | ----------------------------------------------- | ----------------------------------------- |
+| `program_len`    | `pub fn program_len(&self) -> usize`            | Number of BPF instructions                |
+| `rule_count`     | `pub fn rule_count(&self) -> usize`             | Number of compiled rules                  |
+| `default_action` | `pub fn default_action(&self) -> SeccompAction` | The default action for unmatched syscalls |
+
+### SeccompAction
+
+```rust
+pub enum SeccompAction {
+    KillProcess,    // Kill the entire process
+    KillThread,     // Kill the calling thread
+    Trap,           // Deliver SIGSYS
+    Errno(u16),     // Return errno value
+    Log,            // Allow but log
+    Allow,          // Allow the syscall
+}
+```
+
+**Note:** Seccomp BPF compilation currently supports x86_64 only.
+
+---
+
+## Result Types
+
+### ExecutionResult
+
+```rust
+pub struct ExecutionResult {
+    pub stdout: String,                  // Standard output (lossy UTF-8)
+    pub stderr: String,                  // Standard error (lossy UTF-8)
+    pub exit_code: i32,                  // Process exit code (0 = success)
+    pub duration: Duration,              // Wall clock time
+    pub killed_by_timeout: bool,         // True if killed by wall-time limit
+    pub killed_by_oom: bool,             // True if killed by OOM
+    pub signal: Option<i32>,             // Signal number if killed by signal
+    pub peak_memory: Option<u64>,        // Peak memory in bytes
+    pub cpu_time: Option<Duration>,      // CPU time (user + system)
+}
+```
+
+#### Methods
 
 ```rust
 pub fn success(&self) -> bool
 ```
 
-Returns `true` if:
-- `exit_code == 0`
-- `!killed_by_timeout`
-- `!killed_by_oom`
-- `signal.is_none()`
-
-#### `failure_reason`
-
-Get human-readable failure reason.
+Returns `true` if exit code is 0, not killed by timeout, not killed by OOM, and not killed by a signal.
 
 ```rust
 pub fn failure_reason(&self) -> Option<String>
 ```
 
-Returns:
-- `"Execution timed out"` if timeout
-- `"Out of memory"` if OOM
-- `"Killed by signal {n}"` if signaled
-- `"Exit code {n}"` if non-zero exit
-- `None` if success
+Returns a human-readable failure reason string, or `None` if the execution succeeded.
 
-### Example
+### ExecutionReport
 
 ```rust
-let result = sandbox.run("python3", &["script.py"])?;
-
-if result.success() {
-    println!("Output: {}", result.stdout);
-    println!("Duration: {:?}", result.duration);
-    if let Some(mem) = result.peak_memory {
-        println!("Peak memory: {} MB", mem / MB);
-    }
-} else {
-    eprintln!("Failed: {}", result.failure_reason().unwrap());
-    eprintln!("stderr: {}", result.stderr);
+pub struct ExecutionReport {
+    pub result: ExecutionResult,
+    pub diagnostics: ExecutionDiagnostics,
 }
 ```
 
----
+Returned by `run_detailed()` and `run_with_input_detailed()`.
 
-## Configuration Types
-
-### Permission
-
-Mount permission level.
+### ExecutionDiagnostics
 
 ```rust
-pub enum Permission {
-    ReadOnly,   // Read-only access
-    ReadWrite,  // Read and write access
+pub struct ExecutionDiagnostics {
+    pub limits: LimitDiagnostics,
+    pub metrics: MetricDiagnostics,
 }
 ```
 
-### NetworkMode
-
-Network access mode.
+#### `degradation_summary`
 
 ```rust
-pub enum NetworkMode {
-    None,                    // No network access (default)
-    Host,                    // Full network access
-    Whitelist(Vec<String>),  // Only allowed domains
+pub fn degradation_summary(&self) -> Option<String>
+```
+
+Returns a human-readable summary of any limits that were not enforced or metrics that could not be collected. Returns `None` if everything is nominal.
+
+### LimitDiagnostics
+
+```rust
+pub struct LimitDiagnostics {
+    pub memory: LimitStatus,
+    pub cpu: LimitStatus,
+    pub pids: LimitStatus,
 }
 ```
 
-### SeccompProfile
-
-Security profile level.
+### LimitStatus
 
 ```rust
-pub enum SeccompProfile {
-    Strict,      // Minimal syscalls (compute only)
-    Standard,    // Common syscalls (file I/O, network)
-    Permissive,  // Most syscalls allowed
-    Disabled,    // No seccomp filtering
+pub enum LimitStatus {
+    NotRequested,                      // Limit was not configured
+    Enforced,                          // Limit was successfully applied
+    NotEnforced { reason: String },    // Limit could not be applied
+    Unknown { reason: String },        // Status uncertain
+}
+```
+
+### MetricDiagnostics
+
+```rust
+pub struct MetricDiagnostics {
+    pub peak_memory: MetricStatus,
+    pub cpu_time: MetricStatus,
+}
+```
+
+### MetricStatus
+
+```rust
+pub enum MetricStatus {
+    Collected,                         // Metric was successfully read
+    Unavailable { reason: String },    // Metric could not be collected
+    Unknown { reason: String },        // Collection status uncertain
 }
 ```
 
@@ -514,47 +892,93 @@ pub enum SeccompProfile {
 
 ### SandboxError
 
-```rust
-pub enum SandboxError {
-    /// Configuration validation failed
-    ConfigValidation(String),
+All errors returned by libsandbox operations. Grouped by domain:
 
-    /// Platform not supported
-    UnsupportedPlatform(String),
+**Platform errors:**
 
-    /// Linux namespace creation failed
-    NamespaceCreation(String),
+| Variant                      | Fields             | Description                          |
+| ---------------------------- | ------------------ | ------------------------------------ |
+| `PlatformNotSupported`       | `platform: String` | Running on an unsupported OS         |
+| `PlatformFeatureUnavailable` | `feature: String`  | A required kernel feature is missing |
 
-    /// Linux cgroup creation failed
-    CgroupCreation(String),
+**Namespace errors:**
 
-    /// Linux cgroup setting failed
-    CgroupSetting {
-        controller: String,
-        setting: String,
-        value: String,
-        reason: String,
-    },
+| Variant                 | Fields                            | Description                               |
+| ----------------------- | --------------------------------- | ----------------------------------------- |
+| `UserNamespaceDisabled` |                                   | Unprivileged user namespaces are disabled |
+| `NamespaceCreation`     | `ns_type: String, reason: String` | Failed to create a namespace              |
+| `NamespaceEnter`        | `String`                          | Failed to enter a namespace               |
 
-    /// macOS sandbox profile error
-    SandboxProfile(String),
+**Mount errors:**
 
-    /// Command not found
-    CommandNotFound(String),
+| Variant                  | Fields                                          | Description                       |
+| ------------------------ | ----------------------------------------------- | --------------------------------- |
+| `MountFailed`            | `src: PathBuf, target: PathBuf, reason: String` | Bind mount or tmpfs failed        |
+| `PathNotFound`           | `PathBuf`                                       | Source path does not exist        |
+| `InvalidMountPermission` | `path: PathBuf, reason: String`                 | Invalid permission for the target |
+| `DynamicMountFailed`     | `reason: String`                                | Runtime mount operation failed    |
+| `InvalidMountPath`       | `path: PathBuf, reason: String`                 | Path validation failed            |
 
-    /// Permission denied
-    PermissionDenied(String),
+**Cgroup errors:**
 
-    /// Execution timed out
-    Timeout,
+| Variant                       | Fields                                       | Description                           |
+| ----------------------------- | -------------------------------------------- | ------------------------------------- |
+| `CgroupV2Unavailable`         |                                              | cgroup v2 is not mounted              |
+| `CgroupCreation`              | `String`                                     | Failed to create cgroup directory     |
+| `CgroupSetting`               | `controller, setting, value, reason: String` | Failed to write a cgroup control file |
+| `CgroupControllerUnavailable` | `controller: String, available: String`      | Required controller is not available  |
+| `ResourceLimitUnavailable`    | `limit: String, reason: String`              | A requested limit cannot be enforced  |
 
-    /// Internal error
-    Internal(String),
+**Seccomp errors:**
 
-    /// I/O error
-    Io(std::io::Error),
-}
-```
+| Variant              | Fields            | Description                   |
+| -------------------- | ----------------- | ----------------------------- |
+| `SecurityFilterLoad` | `String`          | Failed to load seccomp filter |
+| `SeccompFilterBuild` | `String`          | Failed to compile BPF program |
+| `SyscallBlocked`     | `syscall: String` | A blocked syscall was invoked |
+
+**Execution errors:**
+
+| Variant                | Fields                   | Description                   |
+| ---------------------- | ------------------------ | ----------------------------- |
+| `Timeout`              | `duration: Duration`     | Execution exceeded time limit |
+| `MemoryExceeded`       | `used: u64, limit: u64`  | Memory limit exceeded         |
+| `ProcessLimitExceeded` | `count: u32, limit: u32` | PID limit exceeded            |
+| `Killed`               | `signal: i32`            | Killed by signal              |
+| `CommandNotFound`      | `String`                 | Command executable not found  |
+| `ExecutionFailed`      | `String`                 | General execution failure     |
+
+**Network errors:**
+
+| Variant         | Fields           | Description             |
+| --------------- | ---------------- | ----------------------- |
+| `NetworkDenied` | `domain: String` | Domain blocked by proxy |
+
+**Spawn errors:**
+
+| Variant       | Fields   | Description                |
+| ------------- | -------- | -------------------------- |
+| `SetupFailed` | `String` | Child process setup failed |
+| `ChildExited` |          | Child has already exited   |
+
+**Configuration errors:**
+
+| Variant  | Fields   | Description           |
+| -------- | -------- | --------------------- |
+| `Config` | `String` | Invalid configuration |
+
+**I/O errors:**
+
+| Variant    | Fields               | Description      |
+| ---------- | -------------------- | ---------------- |
+| `Io`       | `std::io::Error`     | I/O error        |
+| `NulError` | `std::ffi::NulError` | Nul byte in path |
+
+**Other:**
+
+| Variant    | Fields   | Description    |
+| ---------- | -------- | -------------- |
+| `Internal` | `String` | Internal error |
 
 ### Result Type
 
@@ -564,9 +988,25 @@ pub type Result<T> = std::result::Result<T, SandboxError>;
 
 ---
 
-## Constants
+## Free Functions and Constants
 
-Size constants for convenience:
+### `is_platform_supported`
+
+```rust
+pub fn is_platform_supported() -> bool
+```
+
+Check if the current platform supports sandboxing. Returns `true` when unprivileged user namespaces are enabled (reads `/proc/sys/kernel/unprivileged_userns_clone`).
+
+### `platform_name`
+
+```rust
+pub fn platform_name() -> &'static str
+```
+
+Get the current platform name. Returns `"linux"`.
+
+### Size Constants
 
 ```rust
 pub const KB: u64 = 1024;
@@ -574,123 +1014,12 @@ pub const MB: u64 = 1024 * 1024;
 pub const GB: u64 = 1024 * 1024 * 1024;
 ```
 
-**Example:**
-```rust
-use nanobox::{MB, GB};
-
-builder
-    .memory_limit(512 * MB)
-    .tmpfs("/tmp", 1 * GB)
-```
-
----
-
-## Platform Functions
-
-### `is_platform_supported`
-
-Check if current platform is supported.
-
-```rust
-pub fn is_platform_supported() -> bool
-```
-
-### `platform_name`
-
-Get current platform name.
-
-```rust
-pub fn platform_name() -> &'static str
-```
-
-Returns: `"linux"`, `"macos"`, or `"windows"`
-
-### `get_platform_capabilities`
-
-Get platform capability information.
-
-```rust
-pub fn get_platform_capabilities() -> PlatformCapabilities
-```
-
-**Example:**
-```rust
-let caps = get_platform_capabilities();
-println!("Memory limit: {}", caps.memory_limit);  // "hard" or "soft"
-println!("Network isolation: {}", caps.network_isolation);
-```
-
----
-
-## Python Bindings
-
-```python
-from nanobox import Sandbox, SandboxBuilder, Permission, MB, GB
-
-# Create sandbox
-sandbox = (Sandbox.builder()
-    .working_dir("/tmp")
-    .memory_limit(512 * MB)
-    .wall_time_limit(30.0)  # seconds as float
-    .build())
-
-# Run command
-result = sandbox.run("python3", ["-c", "print('hello')"])
-print(result.stdout)
-print(result.success())
-
-# Presets
-sandbox = Sandbox.code_judge("/code").build()
-sandbox = Sandbox.agent_executor("/workspace").build()
-```
-
----
-
-## Node.js Bindings
-
-```javascript
-const { SandboxBuilder, Sandbox, Permission, MB, GB } = require('nanobox');
-
-// Create sandbox
-const builder = new SandboxBuilder();
-builder.workingDir('/tmp');
-builder.memoryLimit(512 * MB);
-builder.wallTimeLimit(30.0);
-const sandbox = builder.build();
-
-// Run command
-const result = sandbox.run('node', ['-e', "console.log('hello')"]);
-console.log(result.stdout);
-console.log(result.exitCode);
-
-// Presets
-const judge = SandboxBuilder.codeJudge('/code').build();
-const agent = SandboxBuilder.agentExecutor('/workspace').build();
-```
-
 ---
 
 ## Thread Safety
 
-- `Sandbox` implements `Send + Sync`
-- Safe to share across threads
-- Each execution is independent
-- Concurrent executions on same sandbox are serialized
-
-```rust
-use std::thread;
-
-let sandbox = Arc::new(Sandbox::builder().working_dir("/tmp").build()?);
-
-let handles: Vec<_> = (0..4).map(|i| {
-    let sb = Arc::clone(&sandbox);
-    thread::spawn(move || {
-        sb.run("echo", &[&i.to_string()])
-    })
-}).collect();
-
-for h in handles {
-    let result = h.join().unwrap()?;
-    println!("{}", result.stdout);
-}
-```
+- `Sandbox` implements `Send + Sync`.
+- Each sandbox has independent resources (cgroup directory, namespace, proxy port).
+- The global sandbox ID counter uses `AtomicU64`.
+- Concurrent executions on the same `Sandbox` instance create independent child processes.
+- `Child` is `Send` but not `Sync` (it requires `&mut self` for `try_wait()`).
