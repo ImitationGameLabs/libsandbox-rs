@@ -9,10 +9,10 @@
 compile_error!("libsandbox requires Linux");
 
 use crate::builder::SandboxConfig;
+use crate::cgroup::collect_linux_metrics;
 use crate::config::ExecutionPolicy;
 use crate::error::{Result, SandboxError};
-use crate::cgroup::collect_linux_metrics;
-use crate::process::{Child, spawn_isolated, wait_with_timeout, write_all_raw};
+use crate::process::{spawn_isolated, wait_with_timeout, write_all_raw, Child};
 use crate::result::{ExecutionDiagnostics, ExecutionReport, ExecutionResult};
 use crate::stdio::Stdio;
 use std::os::unix::io::AsRawFd;

@@ -4,12 +4,12 @@
 //! and provides methods to add, remove, and remount filesystem entries inside
 //! a running sandbox's mount namespace.
 
-use crate::config::Permission;
-use crate::error::Result;
-use super::validation::{validate_mount_source, validate_mount_target};
 use super::syscalls::{
     check_child_alive, dynamic_bind_mount, dynamic_remount, dynamic_tmpfs, dynamic_unmount,
 };
+use super::validation::{validate_mount_source, validate_mount_target};
+use crate::config::Permission;
+use crate::error::Result;
 use std::os::fd::OwnedFd;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};

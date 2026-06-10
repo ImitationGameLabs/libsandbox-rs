@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use crate::error::{Result, SandboxError};
 
-use super::strategy::{get_cgroup_strategy, read_controllers, try_enable_controllers, CgroupStrategy};
+use super::strategy::{
+    get_cgroup_strategy, read_controllers, try_enable_controllers, CgroupStrategy,
+};
 use super::{CgroupController, CgroupFile, CGROUP_ROOT, NANOBOX_DIR};
 
 // ---- Public types ----

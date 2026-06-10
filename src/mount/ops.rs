@@ -211,7 +211,10 @@ pub(crate) fn setup_mount_namespace(
     Ok(())
 }
 
-pub(crate) fn setup_mount_overlays(mounts: &[Mount], tmpfs_mounts: &[(PathBuf, u64)]) -> Result<()> {
+pub(crate) fn setup_mount_overlays(
+    mounts: &[Mount],
+    tmpfs_mounts: &[(PathBuf, u64)],
+) -> Result<()> {
     make_mounts_private()?;
 
     for mount_spec in mounts {

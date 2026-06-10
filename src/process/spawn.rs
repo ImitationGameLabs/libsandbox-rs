@@ -6,21 +6,21 @@
 //! setup + parent-child synchronization, but does **not** wait for the child
 //! to exit — that responsibility belongs to the caller.
 
-use crate::builder::SandboxConfig;
-use crate::config::{ExecutionPolicy, NetworkMode, SeccompProfile};
-use crate::error::{Result, SandboxError};
-use crate::mount::ops::{setup_mount_namespace, setup_mount_overlays};
-use crate::namespace::UserNamespace;
-use crate::network::ProxiedNetwork;
-use crate::cgroup::{LimitPlan, apply_resource_limits, configure_cgroup, needs_cgroup};
-use crate::result::{LimitDiagnostics, LimitStatus};
-use crate::seccomp::SeccompFilter;
-use crate::stdio::{Stdio, StdioSlot, StreamRole};
 use super::child::Child;
 use super::fd::{
     abort_child_startup, close_raw, kill_and_reap, open_namespace_fd, read_raw, set_nonblock,
     try_pidfd_open, write_all_raw, AutoCloseFd,
 };
+use crate::builder::SandboxConfig;
+use crate::cgroup::{apply_resource_limits, configure_cgroup, needs_cgroup, LimitPlan};
+use crate::config::{ExecutionPolicy, NetworkMode, SeccompProfile};
+use crate::error::{Result, SandboxError};
+use crate::mount::ops::{setup_mount_namespace, setup_mount_overlays};
+use crate::namespace::UserNamespace;
+use crate::network::ProxiedNetwork;
+use crate::result::{LimitDiagnostics, LimitStatus};
+use crate::seccomp::SeccompFilter;
+use crate::stdio::{Stdio, StdioSlot, StreamRole};
 use std::os::unix::io::{IntoRawFd, RawFd};
 
 /// Spawn a sandboxed child process with arbitrary stdio configuration.

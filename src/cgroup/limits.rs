@@ -11,7 +11,7 @@ use crate::config::{ExecutionPolicy, ResourceEnforcement};
 use crate::error::{Result, SandboxError};
 use crate::result::{LimitDiagnostics, LimitStatus, MetricDiagnostics, MetricStatus};
 
-use super::{CgroupController, CgroupManager, probe_cgroup_support};
+use super::{probe_cgroup_support, CgroupController, CgroupManager};
 
 // ---------------------------------------------------------------------------
 // Enforcement planning
@@ -186,7 +186,9 @@ pub(crate) fn configure_cgroup(
     if let Some(cpu) = config.resources.cpu_limit {
         match cg.set_cpu_limit(cpu) {
             Ok(()) => cpu_configured = true,
-            Err(e) => handle_limit_error(&mut diagnostics.cpu, limit_plan.cpu, "cpu", e.to_string())?,
+            Err(e) => {
+                handle_limit_error(&mut diagnostics.cpu, limit_plan.cpu, "cpu", e.to_string())?
+            }
         }
     }
 
@@ -349,8 +351,9 @@ pub(crate) fn collect_linux_metrics(
             false,
             MetricDiagnostics {
                 peak_memory: MetricStatus::Unavailable {
-                    reason: "peak memory collection requires a cgroup-backed execution path on Linux"
-                        .into(),
+                    reason:
+                        "peak memory collection requires a cgroup-backed execution path on Linux"
+                            .into(),
                 },
                 cpu_time: MetricStatus::Unavailable {
                     reason: "cpu time collection requires a cgroup-backed execution path on Linux"

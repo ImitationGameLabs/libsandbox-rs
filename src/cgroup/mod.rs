@@ -70,10 +70,10 @@ impl CgroupFile {
 // ---- Re-exports ----
 
 pub use manager::{
-    CgroupManager, CgroupSupport, CpuStats, MemoryEvents, MemoryStats,
-    is_cgroup_accessible, is_cgroup_v2_mounted, probe_cgroup_support,
+    is_cgroup_accessible, is_cgroup_v2_mounted, probe_cgroup_support, CgroupManager, CgroupSupport,
+    CpuStats, MemoryEvents, MemoryStats,
 };
 
 pub(crate) use limits::{
-    LimitPlan, apply_resource_limits, collect_linux_metrics, configure_cgroup, needs_cgroup,
+    apply_resource_limits, collect_linux_metrics, configure_cgroup, needs_cgroup, LimitPlan,
 };

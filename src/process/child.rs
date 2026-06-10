@@ -5,10 +5,10 @@
 //! dropped without being explicitly waited on, the child is killed and
 //! reaped to prevent zombie processes.
 
+use crate::cgroup::CgroupManager;
 use crate::error::{Result, SandboxError};
 use crate::mount::handle::MountHandle;
 use crate::network::ProxiedNetwork;
-use crate::cgroup::CgroupManager;
 use std::os::fd::{FromRawFd, OwnedFd};
 
 // ---------------------------------------------------------------------------

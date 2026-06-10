@@ -4,7 +4,9 @@ use crate::error::{Result, SandboxError};
 
 use super::bpf::compile_bpf;
 use super::filter::SeccompFilter;
-use super::presets::{BLOCKED_SYSCALLS, PERMISSIVE_EXTRA_SYSCALLS, STANDARD_SYSCALLS, STRICT_SYSCALLS};
+use super::presets::{
+    BLOCKED_SYSCALLS, PERMISSIVE_EXTRA_SYSCALLS, STANDARD_SYSCALLS, STRICT_SYSCALLS,
+};
 use super::syscalls::syscall_number;
 use super::{Rule, SeccompAction};
 

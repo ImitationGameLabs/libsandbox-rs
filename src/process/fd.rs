@@ -8,19 +8,19 @@ use std::os::fd::{AsFd, FromRawFd};
 use std::os::unix::io::RawFd;
 
 /// RawFd version of close
-pub(super)fn close_raw(fd: RawFd) -> nix::Result<()> {
+pub(super) fn close_raw(fd: RawFd) -> nix::Result<()> {
     let ret = unsafe { libc::close(fd) };
     nix::errno::Errno::result(ret).map(|_| ())
 }
 
 /// RawFd version of write
-pub(super)fn write_raw(fd: RawFd, data: &[u8]) -> nix::Result<usize> {
+pub(super) fn write_raw(fd: RawFd, data: &[u8]) -> nix::Result<usize> {
     let ret = unsafe { libc::write(fd, data.as_ptr() as _, data.len()) };
     nix::errno::Errno::result(ret).map(|r| r as usize)
 }
 
 /// RawFd version of read
-pub(super)fn read_raw(fd: RawFd, buf: &mut [u8]) -> nix::Result<usize> {
+pub(super) fn read_raw(fd: RawFd, buf: &mut [u8]) -> nix::Result<usize> {
     let ret = unsafe { libc::read(fd, buf.as_mut_ptr() as _, buf.len()) };
     nix::errno::Errno::result(ret).map(|r| r as usize)
 }
@@ -39,7 +39,7 @@ pub(crate) fn write_all_raw(fd: RawFd, mut data: &[u8]) -> nix::Result<()> {
 }
 
 /// Set `O_NONBLOCK` on a file descriptor.
-pub(super)fn set_nonblock(fd: RawFd) -> nix::Result<()> {
+pub(super) fn set_nonblock(fd: RawFd) -> nix::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     let flags = nix::errno::Errno::result(flags)?;
     nix::errno::Errno::result(unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) })?;
@@ -47,20 +47,20 @@ pub(super)fn set_nonblock(fd: RawFd) -> nix::Result<()> {
 }
 
 /// RAII guard that closes a raw fd on drop.
-pub(super)struct AutoCloseFd {
+pub(super) struct AutoCloseFd {
     fd: RawFd,
 }
 
 impl AutoCloseFd {
-    pub(super)fn new(fd: RawFd) -> Self {
+    pub(super) fn new(fd: RawFd) -> Self {
         Self { fd }
     }
 
-    pub(super)fn raw(&self) -> RawFd {
+    pub(super) fn raw(&self) -> RawFd {
         self.fd
     }
 
-    pub(super)fn write_byte_and_close(&mut self, byte: u8) -> nix::Result<()> {
+    pub(super) fn write_byte_and_close(&mut self, byte: u8) -> nix::Result<()> {
         let fd = self.fd;
         // Retry on EINTR — a single byte cannot produce a partial write.
         loop {
@@ -73,7 +73,7 @@ impl AutoCloseFd {
         self.close()
     }
 
-    pub(super)fn close(&mut self) -> nix::Result<()> {
+    pub(super) fn close(&mut self) -> nix::Result<()> {
         if self.fd >= 0 {
             let fd = self.fd;
             self.fd = -1;
@@ -93,7 +93,7 @@ impl Drop for AutoCloseFd {
 ///
 /// Returns `None` on kernels older than 5.3 or on any error — the caller
 /// falls back to PID-based kill.
-pub(super)fn try_pidfd_open(pid: i32) -> Option<std::os::fd::OwnedFd> {
+pub(super) fn try_pidfd_open(pid: i32) -> Option<std::os::fd::OwnedFd> {
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0u32) };
     if fd >= 0 {
         // SAFETY: pidfd_open returns a new, valid fd on success.
@@ -107,7 +107,7 @@ pub(super)fn try_pidfd_open(pid: i32) -> Option<std::os::fd::OwnedFd> {
 ///
 /// Returns `None` if the namespace file cannot be opened (e.g., the child
 /// has already exited or the namespace type does not exist).
-pub(super)fn open_namespace_fd(pid: i32, ns_type: &str) -> Option<std::os::fd::OwnedFd> {
+pub(super) fn open_namespace_fd(pid: i32, ns_type: &str) -> Option<std::os::fd::OwnedFd> {
     let path = format!("/proc/{pid}/ns/{ns_type}");
     let c_path = std::ffi::CString::new(path).ok()?;
     let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
@@ -120,7 +120,7 @@ pub(super)fn open_namespace_fd(pid: i32, ns_type: &str) -> Option<std::os::fd::O
 
 /// Close the ready pipe and kill+reap the child, returning the error message
 /// as a [`SandboxError::Internal`].
-pub(super)fn abort_child_startup(
+pub(super) fn abort_child_startup(
     child_pid: nix::unistd::Pid,
     ready_write: &mut AutoCloseFd,
     message: String,
@@ -132,7 +132,7 @@ pub(super)fn abort_child_startup(
 
 /// Send SIGKILL then poll for up to 100ms to reap the child.
 /// Avoids indefinite blocking on D-state processes.
-pub(super)fn kill_and_reap(child_pid: nix::unistd::Pid) {
+pub(super) fn kill_and_reap(child_pid: nix::unistd::Pid) {
     let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGKILL);
     for _ in 0..10 {
         // Inner loop retries EINTR without consuming the iteration budget.
@@ -154,7 +154,7 @@ pub(super)fn kill_and_reap(child_pid: nix::unistd::Pid) {
 }
 
 /// Drain all remaining data from an optional pipe fd into `buf`.
-pub(super)fn drain_owned_fd(fd: Option<&std::os::fd::OwnedFd>, buf: &mut Vec<u8>) {
+pub(super) fn drain_owned_fd(fd: Option<&std::os::fd::OwnedFd>, buf: &mut Vec<u8>) {
     let Some(fd) = fd else { return };
     let mut tmp = [0u8; 4096];
     loop {

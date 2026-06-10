@@ -53,8 +53,8 @@
 //! non-memory limits.
 
 pub mod builder;
-pub mod config;
 pub mod cgroup;
+pub mod config;
 pub mod error;
 pub mod executor;
 pub mod mount;

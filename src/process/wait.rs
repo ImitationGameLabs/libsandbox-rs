@@ -3,8 +3,8 @@
 //! Provides the non-blocking wait loop used by one-shot execution to
 //! collect stdout/stderr while enforcing a wall-clock deadline.
 
-use crate::error::{Result, SandboxError};
 use super::fd::{drain_owned_fd, set_nonblock};
+use crate::error::{Result, SandboxError};
 use std::os::fd::AsFd;
 use std::os::unix::io::AsRawFd;
 use std::time::{Duration, Instant};
