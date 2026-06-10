@@ -108,6 +108,6 @@ Tests require the kernel prerequisites listed above.
 - [API Reference](docs/API.md) -- complete API documentation
 - [Benchmarks](docs/BENCHMARKS.md) -- performance data and comparisons
 
-## License
+## Attribution
 
-MIT
+This project is based on [nanosandbox](https://github.com/Erio-Harrison/nanosandbox) by Erio Harrison.
