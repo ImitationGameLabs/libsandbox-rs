@@ -8,15 +8,15 @@ libsandbox is a Linux-only sandbox primitives library written in Rust. It provid
 
 The library is structured in three layers:
 
-**Public API layer** -- the types and methods that consumers interact with directly: `Sandbox`, `SandboxBuilder`, `SpawnBuilder`, `Child`, `Stdio`, `ExecutionResult`, `ExecutionReport`, and the preset factory methods (`code_judge`, `agent_executor`, etc.). Defined in `src/sandbox.rs` and `src/builder.rs`.
+**Public API layer** -- the types and methods that consumers interact with directly: `Sandbox`, `SandboxBuilder`, `SpawnBuilder`, `Child`, `Stdio`, `ExecutionResult`, `ExecutionReport`. There are no preset factory constructors -- a sandbox is composed from domain configs via the builders. Defined in `src/sandbox.rs` and `src/builder.rs`.
 
-**Configuration layer** -- domain-specific builders that produce validated configuration structs. Each domain (filesystem, resources, network, security, environment) has its own builder and config type. The top-level `SandboxBuilder` aggregates these domain configs into a single `SandboxConfig`. Defined in `src/config/`.
+**Configuration layer** -- domain-specific builders that produce validated configuration structs. Each domain (filesystem, resources, network, security, environment, namespace) has its own builder and config type. The top-level `SandboxBuilder` aggregates these domain configs into a single `SandboxConfig`. Defined in `src/config/`.
 
-**Implementation layer** -- a concrete `LinuxExecutor` struct (not a trait) that carries out sandbox creation via `clone()` with namespace flags, cgroup setup, mount namespace construction, seccomp filter loading, and network proxy management. Defined in `src/executor.rs`, `src/process/`, `src/cgroup/`, `src/mount/`, `src/namespace.rs`, `src/seccomp/`, and `src/network/`.
+**Implementation layer** -- sandbox creation is carried out by a parent-side spawn protocol (`src/process/protocol.rs`) plus a child-side toolbox (`src/process/child_setup.rs`): `clone()` with namespace flags, cgroup setup, mount namespace construction, seccomp filter loading, and network proxy management. Platform support detection lives in `src/executor.rs`. The mechanism modules are `src/process/`, `src/cgroup/`, `src/mount/`, `src/namespace.rs`, `src/seccomp/`, `src/network/`, and (feature-gated) `src/landlock/`.
 
 ## Configuration Architecture
 
-`SandboxConfig` is a composition of five domain config structs:
+`SandboxConfig` is a composition of six domain config structs:
 
 ```rust
 pub struct SandboxConfig {
@@ -25,6 +25,7 @@ pub struct SandboxConfig {
     pub network: NetworkConfig,         // None, Host, or Proxied
     pub security: SecurityConfig,       // seccomp profile, uid/gid
     pub environment: EnvironmentConfig, // env vars, hostname
+    pub namespace: NamespaceConfig,     // user/pid/mount/uts/ipc toggles
 }
 ```
 
@@ -37,10 +38,11 @@ Sandbox::builder()
     .network(network_config)
     .security(security_config)
     .environment(environment_config)
+    .namespace(namespace_config)
     .build()
 ```
 
-Each domain has its own builder with per-field validation. For example, `ResourceBuilder` rejects zero or negative limits at `build()` time. The preset factory methods (`Sandbox::code_judge`, `Sandbox::agent_executor`, etc.) return a `SandboxBuilder` pre-configured with sensible defaults for each use case; callers can override specific domains by passing a replacement config.
+Each domain has its own builder with per-field validation. For example, `ResourceBuilder` rejects zero or negative limits at `build()` time.
 
 This design replaces the earlier flat builder where all options were methods on a single builder type. The domain separation ensures that related options are grouped, validated together, and can be reasoned about independently.
 
@@ -57,7 +59,7 @@ libsandbox uses six Linux namespace types to isolate sandboxed processes:
 | UTS       | `CLONE_NEWUTS`  | Hostname isolation                                       |
 | IPC       | `CLONE_NEWIPC`  | Isolation of System V IPC and POSIX message queues       |
 
-Implementation is in `src/namespace.rs` (user and UTS namespace setup) and `src/process/spawn.rs` (clone orchestration).
+Implementation is in `src/namespace.rs` (user and UTS namespace setup) and `src/process/` (`protocol.rs` for the parent-side spawn protocol, `child_setup.rs` for the child-side toolbox, `spawn.rs`/`wait.rs` for clone orchestration and waiting).
 
 ### User Namespace
 
@@ -96,7 +98,7 @@ libsandbox uses cgroup v2 to enforce resource limits. The `CgroupManager` (`src/
 - `cpu.stat` (`usage_usec`) for CPU time
 - `memory.events` (`oom_kill` counter) for OOM detection
 
-**Cleanup** -- the manager freezes the cgroup (`cgroup.freeze`), sends SIGKILL to all processes, waits briefly, and removes the cgroup directory.
+**Cleanup** -- the manager prefers the atomic `cgroup.kill` file (kernel 5.14+) which kills every process in the cgroup in one step; on older kernels it falls back to freezing (`cgroup.freeze`) plus SIGKILL. It then waits briefly and removes the cgroup directory.
 
 ### Rootless Operation
 
@@ -254,21 +256,11 @@ The `degradation_summary()` method returns a human-readable string listing all l
 
 ## Error Handling
 
-`SandboxError` (defined in `src/error.rs`) has 31 variants grouped by domain:
+`SandboxError` (defined in `src/error.rs`) is a flat `{ kind, context }` struct: a coarse `ErrorKind` discriminator plus a human-readable context string. Callers match on `error.kind()` for programmatic decisions; the typed data that used to live on enum variants (timeout duration, memory used/limit, ...) now lives as typed fields on `ExecutionResult` / `ExecutionReport`, which is where callers actually consume it.
 
-- **Platform** -- `PlatformNotSupported`, `PlatformFeatureUnavailable`
-- **Namespace** -- `UserNamespaceDisabled`, `NamespaceCreation`, `NamespaceEnter`
-- **Mount** -- `MountFailed`, `PathNotFound`, `InvalidMountPermission`, `DynamicMountFailed`, `InvalidMountPath`
-- **Cgroup** -- `CgroupV2Unavailable`, `CgroupCreation`, `CgroupSetting`, `CgroupControllerUnavailable`, `ResourceLimitUnavailable`
-- **Seccomp** -- `SecurityFilterLoad`, `SeccompFilterBuild`, `SyscallBlocked`
-- **Execution** -- `Timeout`, `MemoryExceeded`, `ProcessLimitExceeded`, `Killed`, `CommandNotFound`, `ExecutionFailed`
-- **Network** -- `NetworkDenied`
-- **Spawn** -- `SetupFailed`, `ChildExited`
-- **Configuration** -- `Config`
-- **I/O** -- `Io`, `NulError`
-- **Other** -- `Internal`
+`ErrorKind` groups failures by domain: `Platform`, `Namespace`, `Mount`, `Cgroup`, `Seccomp`, `Landlock`, `Resource`, `Network`, `Exec`, `Timeout`, `Config`, `Io`, `ChildGone`, `Other`. Child-side setup failures are additionally tagged with the spawn-pipeline stage they occurred at (`ChildStage`: fd-setup, mount, rlimit, seccomp, child-hook, exec, ...) -- the tag crosses the spawn error-pipe as a single byte.
 
-All variants carry context (strings, paths, numeric values) to aid debugging. The type implements `std::error::Error` via `thiserror`.
+`SandboxError` implements `std::error::Error` via `thiserror`, and converts from `std::io::Error` / `NulError` so `?` propagates IO/FFI errors. The full variant/enum details live in `cargo doc` (see `ErrorKind` and `ChildStage`).
 
 ## Thread Safety
 
