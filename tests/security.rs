@@ -19,6 +19,8 @@ mod process_management;
 #[path = "security/resource_enforcement.rs"]
 mod resource_enforcement;
 
-// P0: Network security tests (IP bypass, proxy)
+// P0: Network security tests (IP bypass, proxy). Requires the tokio feature
+// (the HTTP proxy is a tokio runtime).
+#[cfg(feature = "tokio")]
 #[path = "security/network_security.rs"]
 mod network_security;

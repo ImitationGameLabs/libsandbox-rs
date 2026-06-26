@@ -1,16 +1,15 @@
 //! SeccompFilter — compiled, immutable BPF program.
 
-use crate::config::SeccompProfile;
 use crate::error::Result;
 
 use super::bpf::{load_filter, set_no_new_privs};
-use super::builder::SeccompFilterBuilder;
 use super::SeccompAction;
 
 /// A compiled seccomp-BPF filter ready to be loaded into the kernel.
 ///
-/// Created by [`SeccompFilterBuilder::build`]. Use [`apply`](SeccompFilter::apply)
-/// to load it in the current process, or wrap it in
+/// Created by [`SeccompFilterBuilder::build`](super::SeccompFilterBuilder::build)
+/// (or [`prepare_seccomp`](crate::prepare_seccomp) for a profile). Load it in
+/// the sandboxed child via [`install`](SeccompFilter::install), or wrap it in
 /// [`SeccompProfile::Custom`](crate::SeccompProfile) for use with the sandbox
 /// builder.
 #[derive(Clone, Debug)]
@@ -21,47 +20,20 @@ pub struct SeccompFilter {
 }
 
 impl SeccompFilter {
-    /// Apply a built-in or custom seccomp profile.
+    /// Install this filter in the current process: set `PR_SET_NO_NEW_PRIVS`,
+    /// then load the BPF program via `seccomp(2)` (falling back to
+    /// `prctl(PR_SET_SECCOMP, ...)` if the `seccomp` syscall is unavailable).
     ///
-    /// Called inside the sandboxed child process (after `clone`, before `exec`).
-    /// Sets `PR_SET_NO_NEW_PRIVS` first, then loads the BPF filter.
-    ///
-    /// # Warning
-    ///
-    /// This sets `PR_SET_NO_NEW_PRIVS` before loading the filter. If the filter
-    /// load fails, the flag remains set and **cannot be unset**. The calling
-    /// process should treat a failure from this method as fatal and exit.
-    pub fn apply(profile: &SeccompProfile) -> Result<()> {
-        match profile {
-            SeccompProfile::Disabled => Ok(()),
-            SeccompProfile::Strict => {
-                let filter = SeccompFilterBuilder::strict().build()?;
-                filter.load()
-            }
-            SeccompProfile::Standard => {
-                let filter = SeccompFilterBuilder::standard().build()?;
-                filter.load()
-            }
-            SeccompProfile::Permissive => {
-                let filter = SeccompFilterBuilder::permissive().build()?;
-                filter.load()
-            }
-            SeccompProfile::Custom(filter) => filter.load(),
-        }
-    }
-
-    /// Load this filter into the kernel for the current process.
-    ///
-    /// Sets `PR_SET_NO_NEW_PRIVS`, then installs the BPF program via
-    /// `seccomp(2)` (falling back to `prctl(PR_SET_SECCOMP, ...)` if the
-    /// `seccomp` syscall is unavailable).
+    /// This is the child-side install primitive — call it inside the sandboxed
+    /// child (after `clone`, before `exec`). It is allocation-free and
+    /// async-signal-safe (raw syscalls only).
     ///
     /// # Security note
     ///
     /// `PR_SET_NO_NEW_PRIVS` is a one-way operation. If `load_filter` fails
     /// after `set_no_new_privs` succeeds, the flag remains set permanently.
     /// Callers should treat failure as fatal.
-    fn load(&self) -> Result<()> {
+    pub fn install(&self) -> Result<()> {
         set_no_new_privs()?;
         load_filter(&self.program)
     }

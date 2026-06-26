@@ -88,7 +88,7 @@ let sandbox = Sandbox::agent_executor("/workspace")
 ## Requirements
 
 - Linux kernel 5.10+ (for cgroup v2 and pidfd)
-- x86_64 (for seccomp BPF compilation)
+- x86_64 or aarch64 (for seccomp BPF compilation)
 - cgroup v2 mounted at `/sys/fs/cgroup`
 - Unprivileged user namespaces enabled (`kernel.unprivileged_userns_clone=1`)
 

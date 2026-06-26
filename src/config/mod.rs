@@ -7,13 +7,17 @@
 
 pub mod environment;
 pub mod filesystem;
+pub mod namespace;
 pub mod network;
 pub mod resource;
 pub mod security;
 
 // Re-export all config and builder types for convenience.
 pub use environment::{EnvironmentBuilder, EnvironmentConfig};
-pub use filesystem::{FilesystemBuilder, FilesystemConfig, Mount, MountOptions, Permission};
+pub use filesystem::{
+    FilesystemBuilder, FilesystemConfig, Mount, MountFlags, Permission, ProcfsMode, RootfsMode,
+};
+pub use namespace::{NamespaceBuilder, NamespaceConfig};
 pub use network::{NetworkBuilder, NetworkConfig, NetworkMode};
 pub use resource::{
     CgroupLimitRequests, ExecutionPolicy, ResourceBuilder, ResourceConfig, ResourceEnforcement,

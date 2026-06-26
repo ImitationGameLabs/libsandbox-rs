@@ -1,11 +1,13 @@
 //! SeccompFilterBuilder — declarative rule API.
 
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 
 use super::bpf::compile_bpf;
 use super::filter::SeccompFilter;
 use super::presets::{
-    BLOCKED_SYSCALLS, PERMISSIVE_EXTRA_SYSCALLS, STANDARD_SYSCALLS, STRICT_SYSCALLS,
+    BLOCKED_SYSCALLS, BLOCKED_SYSCALLS_X86_ONLY, LANDLOCK_CHILD_SYSCALLS,
+    PERMISSIVE_EXTRA_SYSCALLS, PERMISSIVE_EXTRA_SYSCALLS_X86_ONLY, STANDARD_SYSCALLS,
+    STANDARD_SYSCALLS_X86_ONLY, STRICT_SYSCALLS, STRICT_SYSCALLS_X86_ONLY,
 };
 use super::syscalls::syscall_number;
 use super::{Rule, SeccompAction};
@@ -56,6 +58,8 @@ impl SeccompFilterBuilder {
             default_action: SeccompAction::KillProcess,
             rules: STRICT_SYSCALLS
                 .iter()
+                .chain(STRICT_SYSCALLS_X86_ONLY.iter())
+                .chain(LANDLOCK_CHILD_SYSCALLS.iter())
                 .map(|&name| Rule {
                     syscall_nr: syscall_number(name)
                         .unwrap_or_else(|_| panic!("strict preset: unknown syscall '{name}'")),
@@ -72,6 +76,8 @@ impl SeccompFilterBuilder {
             default_action: SeccompAction::KillProcess,
             rules: STANDARD_SYSCALLS
                 .iter()
+                .chain(STANDARD_SYSCALLS_X86_ONLY.iter())
+                .chain(LANDLOCK_CHILD_SYSCALLS.iter())
                 .map(|&name| Rule {
                     syscall_nr: syscall_number(name)
                         .unwrap_or_else(|_| panic!("standard preset: unknown syscall '{name}'")),
@@ -89,6 +95,7 @@ impl SeccompFilterBuilder {
         // as explicit Allow rules for clarity, but the default is Allow.
         let mut rules: Vec<Rule> = STANDARD_SYSCALLS
             .iter()
+            .chain(STANDARD_SYSCALLS_X86_ONLY.iter())
             .map(|&name| Rule {
                 syscall_nr: syscall_number(name)
                     .unwrap_or_else(|_| panic!("permissive preset: unknown syscall '{name}'")),
@@ -97,7 +104,10 @@ impl SeccompFilterBuilder {
             .collect();
 
         // Add permissive-only extras
-        for &name in PERMISSIVE_EXTRA_SYSCALLS {
+        for &name in PERMISSIVE_EXTRA_SYSCALLS
+            .iter()
+            .chain(PERMISSIVE_EXTRA_SYSCALLS_X86_ONLY.iter())
+        {
             rules.push(Rule {
                 syscall_nr: syscall_number(name)
                     .unwrap_or_else(|_| panic!("permissive preset: unknown syscall '{name}'")),
@@ -108,7 +118,7 @@ impl SeccompFilterBuilder {
         // Deny dangerous syscalls (these take precedence because we sort by
         // syscall number and deduplicate, keeping the *last* entry for a given
         // number — we append denies *after* allows so they win).
-        for &name in BLOCKED_SYSCALLS {
+        for &name in BLOCKED_SYSCALLS.iter().chain(BLOCKED_SYSCALLS_X86_ONLY.iter()) {
             rules.push(Rule {
                 syscall_nr: syscall_number(name)
                     .unwrap_or_else(|_| panic!("permissive preset: unknown syscall '{name}'")),
@@ -219,8 +229,12 @@ impl SeccompFilterBuilder {
             || (!default_allows && !exit_has_allow)
             || (!default_allows && !exit_group_has_allow)
         {
-            return Err(SandboxError::SeccompFilterBuild(
-                "exit and exit_group must remain callable".into(),
+            return Err(SandboxError::new(
+                ErrorKind::Seccomp,
+                format!(
+                    "seccomp filter build failed: {}",
+                    "exit and exit_group must remain callable",
+                ),
             ));
         }
 

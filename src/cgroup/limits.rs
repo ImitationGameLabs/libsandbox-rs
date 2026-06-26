@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::builder::SandboxConfig;
 use crate::config::{ExecutionPolicy, ResourceEnforcement};
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 use crate::result::{LimitDiagnostics, LimitStatus, MetricDiagnostics, MetricStatus};
 
 use super::{probe_cgroup_support, CgroupController, CgroupManager};
@@ -120,16 +120,24 @@ pub(crate) fn configure_cgroup(
 
     if !support.mounted || !support.accessible {
         if require_rootless_memory {
-            return Err(SandboxError::ResourceLimitUnavailable {
-                limit: "memory".into(),
-                reason: support.unavailable_reason(Some(CgroupController::Memory)),
-            });
+            return Err(SandboxError::new(
+                ErrorKind::Resource,
+                format!(
+                    "resource limit '{}' cannot be enforced: {}",
+                    "memory",
+                    support.unavailable_reason(Some(CgroupController::Memory))
+                ),
+            ));
         }
         if let Some((limit, controller)) = limit_plan.first_strict_limit() {
-            return Err(SandboxError::ResourceLimitUnavailable {
-                limit: limit.into(),
-                reason: support.unavailable_reason(Some(controller)),
-            });
+            return Err(SandboxError::new(
+                ErrorKind::Resource,
+                format!(
+                    "resource limit '{}' cannot be enforced: {}",
+                    limit,
+                    support.unavailable_reason(Some(controller))
+                ),
+            ));
         }
 
         let reason = support.unavailable_reason(None);
@@ -142,16 +150,19 @@ pub(crate) fn configure_cgroup(
         Err(e) => {
             let reason = format!("failed to create cgroup: {e}");
             if require_rootless_memory {
-                return Err(SandboxError::ResourceLimitUnavailable {
-                    limit: "memory".into(),
-                    reason,
-                });
+                return Err(SandboxError::new(
+                    ErrorKind::Resource,
+                    format!(
+                        "resource limit '{}' cannot be enforced: {}",
+                        "memory", reason
+                    ),
+                ));
             }
             if let Some((limit, _)) = limit_plan.first_strict_limit() {
-                return Err(SandboxError::ResourceLimitUnavailable {
-                    limit: limit.into(),
-                    reason,
-                });
+                return Err(SandboxError::new(
+                    ErrorKind::Resource,
+                    format!("resource limit '{}' cannot be enforced: {}", limit, reason),
+                ));
             }
 
             set_best_effort_unavailable(&mut diagnostics, *limit_plan, &reason);
@@ -168,10 +179,10 @@ pub(crate) fn configure_cgroup(
             Ok(()) => memory_configured = true,
             Err(e) => {
                 if require_rootless_memory {
-                    return Err(SandboxError::ResourceLimitUnavailable {
-                        limit: "memory".into(),
-                        reason: e.to_string(),
-                    });
+                    return Err(SandboxError::new(
+                        ErrorKind::Resource,
+                        format!("resource limit '{}' cannot be enforced: {}", "memory", e),
+                    ));
                 }
                 handle_limit_error(
                     &mut diagnostics.memory,
@@ -208,17 +219,20 @@ pub(crate) fn configure_cgroup(
         let reason = format!("failed to add process to cgroup: {e}");
         if require_rootless_memory {
             cg.cleanup();
-            return Err(SandboxError::ResourceLimitUnavailable {
-                limit: "memory".into(),
-                reason,
-            });
+            return Err(SandboxError::new(
+                ErrorKind::Resource,
+                format!(
+                    "resource limit '{}' cannot be enforced: {}",
+                    "memory", reason
+                ),
+            ));
         }
         if let Some((limit, _)) = limit_plan.first_strict_limit() {
             cg.cleanup();
-            return Err(SandboxError::ResourceLimitUnavailable {
-                limit: limit.into(),
-                reason,
-            });
+            return Err(SandboxError::new(
+                ErrorKind::Resource,
+                format!("resource limit '{}' cannot be enforced: {}", limit, reason),
+            ));
         }
 
         if memory_configured {
@@ -271,10 +285,10 @@ fn handle_limit_error(
     reason: String,
 ) -> Result<()> {
     match mode {
-        EnforcementMode::Strict => Err(SandboxError::ResourceLimitUnavailable {
-            limit: limit.into(),
-            reason,
-        }),
+        EnforcementMode::Strict => Err(SandboxError::new(
+            ErrorKind::Resource,
+            format!("resource limit '{}' cannot be enforced: {}", limit, reason),
+        )),
         EnforcementMode::BestEffort => {
             *status = LimitStatus::NotEnforced { reason };
             Ok(())
@@ -365,43 +379,10 @@ pub(crate) fn collect_linux_metrics(
 }
 
 // ---------------------------------------------------------------------------
-// rlimit-based resource limits (applied inside the child)
+// rlimit-based resource limits are now applied via the child-side toolbox
+// (`crate::prepare_rlimits` / `crate::install_rlimits`), split into a
+// parent-side pure transform and an async-signal-safe child-side installer.
 // ---------------------------------------------------------------------------
-
-pub(crate) fn apply_resource_limits(config: &SandboxConfig) {
-    if let Some(max_files) = config.resources.max_open_files {
-        let rlim = libc::rlimit {
-            rlim_cur: max_files as libc::rlim_t,
-            rlim_max: max_files as libc::rlim_t,
-        };
-        unsafe {
-            libc::setrlimit(libc::RLIMIT_NOFILE, &rlim);
-        }
-    }
-
-    if let Some(max_file_size) = config.resources.max_file_size {
-        let rlim = libc::rlimit {
-            rlim_cur: max_file_size as libc::rlim_t,
-            rlim_max: max_file_size as libc::rlim_t,
-        };
-        unsafe {
-            libc::setrlimit(libc::RLIMIT_FSIZE, &rlim);
-        }
-    }
-
-    if let Some(cpu_time) = config.resources.cpu_time_limit {
-        let secs = cpu_time.as_secs();
-        if secs > 0 {
-            let rlim = libc::rlimit {
-                rlim_cur: secs as libc::rlim_t,
-                rlim_max: secs as libc::rlim_t,
-            };
-            unsafe {
-                libc::setrlimit(libc::RLIMIT_CPU, &rlim);
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

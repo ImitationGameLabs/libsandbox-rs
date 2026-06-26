@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 
 use super::strategy::{
     get_cgroup_strategy, read_controllers, try_enable_controllers, CgroupStrategy,
@@ -110,10 +110,14 @@ impl CgroupManager {
                 .map(|c| c.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            Err(SandboxError::CgroupControllerUnavailable {
-                controller: controller.as_str().into(),
-                available,
-            })
+            Err(SandboxError::new(
+                ErrorKind::Cgroup,
+                format!(
+                    "cgroup controller '{}' not available. Available: {}",
+                    controller.as_str(),
+                    available
+                ),
+            ))
         }
     }
 
@@ -130,11 +134,14 @@ impl CgroupManager {
             CgroupStrategy::Delegated { base } => {
                 Self::create_delegated(base, sandbox_id, requested, strategy.clone())
             }
-            CgroupStrategy::Unavailable => Err(SandboxError::CgroupCreation(
-                "No usable cgroup access. Non-root requires a writable, empty delegated \
+            CgroupStrategy::Unavailable => Err(SandboxError::new(
+                ErrorKind::Cgroup,
+                format!(
+                    "failed to create cgroup: {}",
+                    "No usable cgroup access. Non-root requires a writable, empty delegated \
                  cgroup v2 parent (for example a pre-prepared scope), or run as root, or omit \
-                 unsupported resource limits."
-                    .into(),
+                 unsupported resource limits.",
+                ),
             )),
         }
     }
@@ -146,7 +153,13 @@ impl CgroupManager {
         strategy: CgroupStrategy,
     ) -> Result<Self> {
         fs::create_dir_all(base).map_err(|e| {
-            SandboxError::CgroupCreation(format!("Failed to create base cgroup: {}", e))
+            SandboxError::new(
+                ErrorKind::Cgroup,
+                format!(
+                    "failed to create cgroup: Failed to create base cgroup: {}",
+                    e
+                ),
+            )
         })?;
 
         let _ = try_enable_controllers(Path::new(CGROUP_ROOT), requested);
@@ -154,7 +167,13 @@ impl CgroupManager {
 
         let path = base.join(sandbox_id);
         fs::create_dir_all(&path).map_err(|e| {
-            SandboxError::CgroupCreation(format!("Failed to create cgroup {}: {}", sandbox_id, e))
+            SandboxError::new(
+                ErrorKind::Cgroup,
+                format!(
+                    "failed to create cgroup: Failed to create cgroup {}: {}",
+                    sandbox_id, e
+                ),
+            )
         })?;
 
         let controllers = read_controllers(&path);
@@ -178,10 +197,13 @@ impl CgroupManager {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => {
-                return Err(SandboxError::CgroupCreation(format!(
-                    "Failed to create libsandbox dir: {}",
-                    e
-                )));
+                return Err(SandboxError::new(
+                    ErrorKind::Cgroup,
+                    format!(
+                        "failed to create cgroup: Failed to create libsandbox dir: {}",
+                        e
+                    ),
+                ));
             }
         }
         // Always ensure controllers are enabled in libsandbox/, even if another
@@ -190,7 +212,13 @@ impl CgroupManager {
 
         let path = nanobox_dir.join(sandbox_id);
         fs::create_dir(&path).map_err(|e| {
-            SandboxError::CgroupCreation(format!("Failed to create cgroup {}: {}", sandbox_id, e))
+            SandboxError::new(
+                ErrorKind::Cgroup,
+                format!(
+                    "failed to create cgroup: Failed to create cgroup {}: {}",
+                    sandbox_id, e
+                ),
+            )
         })?;
 
         let controllers = read_controllers(&path);
@@ -208,11 +236,11 @@ impl CgroupManager {
         self.require_controller(CgroupController::Memory)?;
 
         self.write_file(CgroupFile::MemoryMax, &bytes.to_string())
-            .map_err(|e| SandboxError::CgroupSetting {
-                controller: "memory".into(),
-                setting: "max".into(),
-                value: bytes.to_string(),
-                reason: e.to_string(),
+            .map_err(|e| {
+                SandboxError::new(
+                    ErrorKind::Cgroup,
+                    format!("failed to set {}.{} = {}: {}", "memory", "max", bytes, e),
+                )
             })?;
 
         // Soft limit at 90%
@@ -230,13 +258,18 @@ impl CgroupManager {
         let quota = (cpus * period as f64) as u64;
         let value = format!("{} {}", quota, period);
 
-        self.write_file(CgroupFile::CpuMax, &value)
-            .map_err(|e| SandboxError::CgroupSetting {
-                controller: "cpu".into(),
-                setting: "max".into(),
-                value: value.clone(),
-                reason: e.to_string(),
-            })?;
+        self.write_file(CgroupFile::CpuMax, &value).map_err(|e| {
+            SandboxError::new(
+                ErrorKind::Cgroup,
+                format!(
+                    "failed to set {}.{} = {}: {}",
+                    "cpu",
+                    "max",
+                    value.clone(),
+                    e
+                ),
+            )
+        })?;
 
         Ok(())
     }
@@ -246,11 +279,11 @@ impl CgroupManager {
         self.require_controller(CgroupController::Pids)?;
 
         self.write_file(CgroupFile::PidsMax, &max.to_string())
-            .map_err(|e| SandboxError::CgroupSetting {
-                controller: "pids".into(),
-                setting: "max".into(),
-                value: max.to_string(),
-                reason: e.to_string(),
+            .map_err(|e| {
+                SandboxError::new(
+                    ErrorKind::Cgroup,
+                    format!("failed to set {}.{} = {}: {}", "pids", "max", max, e),
+                )
             })?;
 
         Ok(())
@@ -262,7 +295,13 @@ impl CgroupManager {
     pub fn add_process(&self, pid: u32) -> Result<()> {
         self.write_file(CgroupFile::Procs, &pid.to_string())
             .map_err(|e| {
-                SandboxError::CgroupCreation(format!("Failed to add PID {} to cgroup: {}", pid, e))
+                SandboxError::new(
+                    ErrorKind::Cgroup,
+                    format!(
+                        "failed to create cgroup: Failed to add PID {} to cgroup: {}",
+                        pid, e
+                    ),
+                )
             })
     }
 
@@ -272,14 +311,24 @@ impl CgroupManager {
     pub fn get_memory_stats(&self) -> Result<MemoryStats> {
         let current = self
             .read_file(CgroupFile::MemoryCurrent)
-            .map_err(|e| SandboxError::Internal(format!("Failed to read memory.current: {}", e)))?
+            .map_err(|e| {
+                SandboxError::new(
+                    ErrorKind::Cgroup,
+                    format!("Failed to read memory.current: {}", e),
+                )
+            })?
             .trim()
             .parse::<u64>()
             .unwrap_or(0);
 
         let peak = self
             .read_file(CgroupFile::MemoryPeak)
-            .map_err(|e| SandboxError::Internal(format!("Failed to read memory.peak: {}", e)))?
+            .map_err(|e| {
+                SandboxError::new(
+                    ErrorKind::Cgroup,
+                    format!("Failed to read memory.peak: {}", e),
+                )
+            })?
             .trim()
             .parse::<u64>()
             .unwrap_or(0);
@@ -289,9 +338,9 @@ impl CgroupManager {
 
     /// Get CPU statistics
     pub fn get_cpu_stats(&self) -> Result<CpuStats> {
-        let stat = self
-            .read_file(CgroupFile::CpuStat)
-            .map_err(|e| SandboxError::Internal(format!("Failed to read cpu.stat: {}", e)))?;
+        let stat = self.read_file(CgroupFile::CpuStat).map_err(|e| {
+            SandboxError::new(ErrorKind::Cgroup, format!("Failed to read cpu.stat: {}", e))
+        })?;
 
         let mut usage_usec = 0u64;
         let mut user_usec = 0u64;
@@ -318,9 +367,12 @@ impl CgroupManager {
 
     /// Get memory events (for OOM detection)
     pub fn get_memory_events(&self) -> Result<MemoryEvents> {
-        let events = self
-            .read_file(CgroupFile::MemoryEvents)
-            .map_err(|e| SandboxError::Internal(format!("Failed to read memory.events: {}", e)))?;
+        let events = self.read_file(CgroupFile::MemoryEvents).map_err(|e| {
+            SandboxError::new(
+                ErrorKind::Cgroup,
+                format!("Failed to read memory.events: {}", e),
+            )
+        })?;
 
         let mut result = MemoryEvents::default();
 
@@ -359,10 +411,21 @@ impl CgroupManager {
 
     // ---- Lifecycle ----
 
-    /// Kill all processes in the cgroup
+    /// Kill all processes in the cgroup.
+    ///
+    /// Prefers the `cgroup.kill` file (kernel ≥5.14), which kills every member
+    /// **atomically**. On older kernels falls back to freeze + iterated
+    /// `cgroup.procs` snapshot + SIGKILL (best-effort, bounded retries — *not*
+    /// atomic, since a process mid-`fork()` when the freeze lands may complete
+    /// and not yet appear in the snapshot).
     pub fn kill_all(&self) {
-        let _ = self.write_file(CgroupFile::Freeze, "1");
+        // Atomic path: cgroup.kill (≥5.14). ENOENT/ENOTSUP on older kernels.
+        if self.write_file(CgroupFile::Kill, "1").is_ok() {
+            return;
+        }
 
+        // Fallback: freeze + iterated kill.
+        let _ = self.write_file(CgroupFile::Freeze, "1");
         // 5 iterations × 10 ms = 50 ms max. Processes overwhelmingly die
         // within milliseconds of SIGKILL.
         for _ in 0..5 {

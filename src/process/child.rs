@@ -6,7 +6,7 @@
 //! reaped to prevent zombie processes.
 
 use crate::cgroup::CgroupManager;
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 use crate::mount::handle::MountHandle;
 use crate::network::ProxiedNetwork;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -204,7 +204,10 @@ impl Child {
             if ret < 0 {
                 let errno = nix::errno::Errno::last_raw();
                 if errno == libc::ESRCH {
-                    return Err(SandboxError::ChildExited);
+                    return Err(SandboxError::new(
+                        crate::error::ErrorKind::ChildGone,
+                        "child process has exited",
+                    ));
                 }
             }
         }
@@ -215,9 +218,10 @@ impl Child {
             let new_fd = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
             if new_fd < 0 {
                 let errno = nix::errno::Errno::last_raw();
-                Err(SandboxError::Internal(format!(
-                    "F_DUPFD_CLOEXEC failed: {errno}"
-                )))
+                Err(SandboxError::new(
+                    ErrorKind::Exec,
+                    format!("F_DUPFD_CLOEXEC failed: {errno}"),
+                ))
             } else {
                 Ok(unsafe { OwnedFd::from_raw_fd(new_fd) })
             }
@@ -225,17 +229,21 @@ impl Child {
 
         // Duplicate namespace fds.
         let user_ns_fd = self.ns_fds.user.as_ref()
-            .ok_or_else(|| SandboxError::DynamicMountFailed {
-                reason: "namespace fds not available (child may not have been spawned with namespace support)".into(),
-            })
+            .ok_or_else(|| SandboxError::new(ErrorKind::Mount, format!("dynamic mount operation failed: {}", "namespace fds not available (child may not have been spawned with namespace support)")))
             .and_then(dup_fd)?;
 
         let mnt_ns_fd = self
             .ns_fds
             .mnt
             .as_ref()
-            .ok_or_else(|| SandboxError::DynamicMountFailed {
-                reason: "namespace fds not available".into(),
+            .ok_or_else(|| {
+                SandboxError::new(
+                    ErrorKind::Mount,
+                    format!(
+                        "dynamic mount operation failed: {}",
+                        "namespace fds not available"
+                    ),
+                )
             })
             .and_then(dup_fd)?;
 
@@ -245,27 +253,37 @@ impl Child {
         Ok(MountHandle::new(user_ns_fd, mnt_ns_fd, child_pidfd))
     }
 
-    /// Send SIGKILL to the child's process group and, as a fallback, to the
-    /// PID directly. Tolerates `ESRCH` (child already dead) but surfaces
-    /// unexpected errors (e.g. `EPERM`).
+    /// Kill the sandboxed child and (best-effort) all of its descendants.
     ///
-    /// On Linux 5.3+, uses `pidfd_send_signal` when a pidfd is available,
-    /// which guarantees the signal targets the correct process even if the
-    /// original PID has been recycled by the kernel.
+    /// Priority:
+    /// 1. **Cgroup** (`CgroupManager::kill_all`) — atomic `cgroup.kill` file on
+    ///    ≥5.14, else freeze + iterated kill. Catches every descendant
+    ///    including those that escaped via `setpgid`.
+    /// 2. **`kill_tree`** — iteratively walks `/proc/<pid>/.../children` and
+    ///    `pidfd_send_signal`s each descendant. Best-effort fallback for the
+    ///    non-cgroup case; closes the `setpgid` escape hole that `kill(-pid)`
+    ///    has.
+    /// 3. A final `pidfd_send_signal` on the root pidfd (PID-recycling-safe).
     ///
-    /// # Limitations
-    ///
-    /// The process-group kill (`kill(-pid, SIGKILL)`) targets only processes
-    /// in the PGID matching the child PID. Subprocesses that call `setpgid()`
-    /// to create their own process groups will survive. For cgroup-backed
-    /// executions, `CgroupManager::kill_all()` handles this. Non-cgroup
-    /// executions may leave orphaned sub-processes in different PGIDs.
+    /// For untrusted workloads, prefer a cgroup-backed sandbox.
     pub fn kill(&self) -> Result<()> {
-        // Prefer pidfd when available — immune to PID recycling races.
+        if let Some(cg) = self.cgroup.as_ref() {
+            // Strongest: cgroup membership catches all descendants regardless
+            // of setpgid.
+            cg.kill_all();
+            return Ok(());
+        }
+
+        // No cgroup: walk the descendant tree to catch setpgid-escaped
+        // grandchildren that kill(-pid) would miss.
+        super::kill::kill_tree(self.pid);
+
+        // PID-recycling-safe backup on the root itself.
         if let Some(ref pidfd) = self.pidfd {
             use std::os::fd::AsRawFd;
             let raw_pidfd = pidfd.as_raw_fd();
-            let ret = unsafe {
+            // SAFETY: pidfd_send_signal on a valid pidfd with null siginfo.
+            let _ = unsafe {
                 libc::syscall(
                     libc::SYS_pidfd_send_signal,
                     raw_pidfd as libc::c_int,
@@ -274,34 +292,9 @@ impl Child {
                     0u32,
                 )
             };
-            if ret == 0 {
-                return Ok(());
-            }
-            // ESRCH from pidfd means process already dead — still Ok.
-            let errno = nix::errno::Errno::last_raw();
-            if errno == libc::ESRCH {
-                return Ok(());
-            }
-            // Unexpected pidfd failure — log and fall through to PID-based kill.
-            tracing::warn!(
-                "pidfd_send_signal failed with errno {}, falling back to PID-based kill",
-                errno
-            );
         }
 
-        let pid = nix::unistd::Pid::from_raw(self.pid);
-        // Kill the process group (negative PID) to catch any sub-processes.
-        // Best-effort — may fail if the child has not yet called setpgid(0, 0).
-        let _ = unsafe { libc::kill(-self.pid, libc::SIGKILL) };
-        // Kill the PID directly as a fallback. Tolerate ESRCH (already dead)
-        // but surface unexpected errors like EPERM.
-        match nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL) {
-            Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
-            Err(e) => Err(SandboxError::Internal(format!(
-                "kill pid {}: {e}",
-                self.pid
-            ))),
-        }
+        Ok(())
     }
 
     /// Non-blocking check for child exit.
@@ -327,7 +320,10 @@ impl Child {
             }
             Ok(nix::sys::wait::WaitStatus::StillAlive) => Ok(None),
             Ok(_) => Ok(None),
-            Err(e) => Err(SandboxError::Internal(format!("try_waitpid: {e}"))),
+            Err(e) => Err(SandboxError::new(
+                ErrorKind::Exec,
+                format!("try_waitpid: {e}"),
+            )),
         }
     }
 
@@ -348,6 +344,26 @@ impl Child {
     pub fn wait(mut self) -> Result<ExitStatus> {
         let status = self.wait_blocking()?;
         Ok(status)
+    }
+
+    /// Asynchronously wait for the child to exit (requires the `tokio` feature).
+    ///
+    /// Event-driven: awaits the child's pidfd for exit rather than
+    /// busy-polling, so it composes with other async work. Like [`wait`](Self::wait),
+    /// take and drain stdout/stderr fds beforehand to avoid pipe-buffer
+    /// deadlock.
+    #[cfg(feature = "tokio")]
+    pub async fn wait_async(mut self) -> Result<ExitStatus> {
+        let pid = nix::unistd::Pid::from_raw(self.pid);
+        // No pipes here (caller drains them); large timeout — the pidfd fires
+        // on actual exit.
+        let (_out, _err, code, _killed_by_timeout, signal) =
+            super::wait::wait_with_timeout_async(pid, None, None, std::time::Duration::MAX).await?;
+        self.waited = true;
+        Ok(match signal {
+            Some(sig) => ExitStatus::from_signal(sig),
+            None => ExitStatus::from_exit(code),
+        })
     }
 
     /// Close the parent-end stdin fd, signalling EOF to the child.
@@ -397,8 +413,13 @@ impl Child {
         // Without this, the cgroup cleanup would send SIGKILL to the detached child.
         std::mem::forget(self.cgroup.take());
         // Prevent ProxiedNetwork::Drop from shutting down the proxy,
-        // which would kill the child's network connectivity.
+        // which would kill the child's network connectivity. (Under the
+        // no-tokio config ProxiedNetwork is a Drop-less ZST, so take() is
+        // enough; the guard is only meaningful with the tokio feature.)
+        #[cfg(feature = "tokio")]
         std::mem::forget(self._proxy.take());
+        #[cfg(not(feature = "tokio"))]
+        let _ = self._proxy.take();
         pid
     }
 
@@ -440,10 +461,11 @@ impl Child {
                 self.waited = true;
                 Ok(ExitStatus::from_signal(sig as i32))
             }
-            Ok(other) => Err(SandboxError::Internal(format!(
-                "unexpected waitpid status: {other:?}"
-            ))),
-            Err(e) => Err(SandboxError::Internal(format!("waitpid: {e}"))),
+            Ok(other) => Err(SandboxError::new(
+                ErrorKind::Exec,
+                format!("unexpected waitpid status: {other:?}"),
+            )),
+            Err(e) => Err(SandboxError::new(ErrorKind::Exec, format!("waitpid: {e}"))),
         }
     }
 }

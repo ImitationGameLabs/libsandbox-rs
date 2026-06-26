@@ -1,14 +1,29 @@
 //! Network Whitelist Example
 //!
 //! Demonstrates using libsandbox's network whitelisting feature to allow
-//! sandboxed processes to access only specific domains.
+//! sandboxed processes to access only specific domains. Requires the `tokio`
+//! feature (the default).
 //!
 //! Run with: cargo run --example network_allow
 
-use libsandbox::config::{FilesystemConfig, NetworkConfig, ResourceConfig};
-use libsandbox::Sandbox;
+#![cfg_attr(not(feature = "tokio"), allow(unused))]
+
+#[cfg(feature = "tokio")]
+use libsandbox::config::{
+    EnvironmentConfig, FilesystemConfig, NetworkConfig, ResourceConfig, SeccompProfile,
+    SecurityConfig,
+};
+#[cfg(feature = "tokio")]
+use libsandbox::{Permission, Sandbox};
+#[cfg(feature = "tokio")]
 use std::time::Duration;
 
+#[cfg(not(feature = "tokio"))]
+fn main() {
+    eprintln!("network_allow example requires the `tokio` feature; rebuild with --features tokio");
+}
+
+#[cfg(feature = "tokio")]
 fn main() {
     println!("=== Network Whitelist Example ===\n");
 
@@ -177,8 +192,30 @@ print(f"PATH: {os.environ.get('PATH', 'not set')[:50]}...")
     let script_path = workspace.join("api_demo.py");
     std::fs::write(&script_path, script).unwrap();
 
-    // Mount workspace and run
-    let sandbox = Sandbox::agent_executor(&workspace)
+    // Mount workspace and run. Compose the agent-shaped config inline (presets
+    // were removed in favor of explicit composition).
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .mount(&workspace, "/workspace", Permission::ReadWrite)
+                .tmpfs("/tmp", 512 * 1024 * 1024)
+                .working_dir("/workspace")
+                .build()
+                .unwrap(),
+        )
+        .security(
+            SecurityConfig::builder()
+                .seccomp_profile(SeccompProfile::Standard)
+                .build()
+                .unwrap(),
+        )
+        .environment(
+            EnvironmentConfig::builder()
+                .env("HOME", "/workspace")
+                .env("USER", "sandbox")
+                .build()
+                .unwrap(),
+        )
         .network(NetworkConfig::proxied(&[
             "api.openai.com",
             "api.anthropic.com",

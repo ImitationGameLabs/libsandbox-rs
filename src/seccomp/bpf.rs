@@ -1,16 +1,21 @@
 //! BPF compilation and kernel loading.
 
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 
 use super::{Rule, SeccompAction};
 
 // ---------------------------------------------------------------------------
-// Audit architecture constant — not exported by libc for x86_64.
+// Audit architecture constant — not exported by libc; defined per targeted arch.
 // ---------------------------------------------------------------------------
 
-/// `AUDIT_ARCH_X86_64` — the native architecture value in `seccomp_data.arch`.
+/// The native architecture value in `seccomp_data.arch` (`AUDIT_ARCH_*`).
 #[cfg(target_arch = "x86_64")]
-pub(super) const AUDIT_ARCH: u32 = 0xC000003E;
+pub(super) const AUDIT_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
+/// The native architecture value in `seccomp_data.arch` (`AUDIT_ARCH_*`).
+#[cfg(target_arch = "aarch64")]
+pub(super) const AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("seccomp: AUDIT_ARCH not defined for this target arch (add it above)");
 
 // ---------------------------------------------------------------------------
 // BPF compilation
@@ -93,11 +98,8 @@ pub(super) fn compile_bpf(
 
     // Validate BPF program length (kernel limit: 4096 instructions).
     if prog.len() > libc::BPF_MAXINSNS as usize {
-        return Err(SandboxError::SeccompFilterBuild(format!(
-            "BPF program too large: {} instructions (kernel limit: {})",
-            prog.len(),
-            libc::BPF_MAXINSNS
-        )));
+        return Err(SandboxError::new(ErrorKind::Seccomp, format!("seccomp filter build failed: BPF program too large: {} instructions (kernel limit: {})", prog.len(),
+            libc::BPF_MAXINSNS)));
     }
 
     Ok(prog)
@@ -235,11 +237,14 @@ fn patch_jump_node(
     // jt = forward offset from (jump+1) to ret_abs
     let jt = ret_abs - jump_abs - 1;
     if jt > 255 {
-        return Err(SandboxError::SeccompFilterBuild(format!(
-            "BPF jump offset overflow: {jt} > 255 ({} rules) — \
+        return Err(SandboxError::new(
+            ErrorKind::Seccomp,
+            format!(
+                "seccomp filter build failed: BPF jump offset overflow: {jt} > 255 ({} rules) — \
              reduce the number of syscall rules",
-            rules.len()
-        )));
+                rules.len()
+            ),
+        ));
     }
     prog[jump_abs].jt = jt as u8;
 
@@ -260,8 +265,12 @@ pub(super) fn set_no_new_privs() -> Result<()> {
     // the request atomically.
     let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if ret != 0 {
-        return Err(SandboxError::SecurityFilterLoad(
-            "Failed to set PR_SET_NO_NEW_PRIVS".into(),
+        return Err(SandboxError::new(
+            ErrorKind::Seccomp,
+            format!(
+                "failed to load security filter: {}",
+                "Failed to set PR_SET_NO_NEW_PRIVS",
+            ),
         ));
     }
     Ok(())
@@ -323,17 +332,17 @@ pub(super) fn load_filter(program: &[libc::sock_filter]) -> Result<()> {
             )
         };
         if ret != 0 {
-            return Err(SandboxError::SecurityFilterLoad(format!(
-                "prctl(PR_SET_SECCOMP) failed: errno {}",
-                // SAFETY: same rationale as the errno read above — thread-local,
-                // read immediately after syscall error.
-                unsafe { *libc::__errno_location() }
-            )));
+            return Err(SandboxError::new(
+                ErrorKind::Seccomp,
+                format!(
+                    "failed to load security filter: prctl(PR_SET_SECCOMP) failed: errno {}", // SAFETY: same rationale as the errno read above — thread-local,
+                    // read immediately after syscall error.
+                    unsafe { *libc::__errno_location() }
+                ),
+            ));
         }
         return Ok(());
     }
 
-    Err(SandboxError::SecurityFilterLoad(format!(
-        "seccomp(SECCOMP_SET_MODE_FILTER) failed: errno {errno}"
-    )))
+    Err(SandboxError::new(ErrorKind::Seccomp, format!("failed to load security filter: seccomp(SECCOMP_SET_MODE_FILTER) failed: errno {errno}")))
 }

@@ -8,6 +8,18 @@ keywords = ["sandbox", "linux", "agent", "security"]
 categories = ["os::linux-apis", "development-tools"]
 autobenches = false
 
+[features]
+# The `tokio` feature enables the HTTP network proxy (NetworkMode::Proxied)
+# and the async wait API. Pure-sync / no-network callers can disable it to
+# avoid the tokio compile-time and binary-size cost.
+default = ["tokio"]
+tokio = ["dep:tokio"]
+# Landlock filesystem-access enforcement (Linux LSM). Adds the `landlock`
+# module (`prepare_landlock` / `install_landlock` + a `ChildSetup` hook) and
+# widens the `Standard`/`Strict` seccomp allowlists with `landlock_restrict_self`
+# so the child can enter its domain under those profiles. Independent of `tokio`.
+landlock = ["dep:landlock"]
+
 [dependencies]
 # Error handling
 thiserror = "2.0"
@@ -18,12 +30,18 @@ tracing = "0.1"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 
-# Async runtime (for HTTP proxy)
-tokio = { version = "1.0", features = ["net", "io-util", "rt-multi-thread", "sync", "macros", "time"] }
+# Async runtime (optional; for the HTTP proxy + async wait)
+tokio = { version = "1.0", optional = true, features = ["net", "io-util", "rt-multi-thread", "sync", "macros", "time"] }
 
 # Linux syscalls
 nix = { version = "0.31", features = ["sched", "mount", "signal", "user", "fs", "hostname", "process", "net"] }
 libc = "0.2"
+
+# Landlock LSM bindings (optional). The crate is Linux-first and `compile_error!`s
+# off-Linux, so target-gating here is decorative but keeps non-Linux hosts from
+# even resolving the dependency.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"

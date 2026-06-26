@@ -2,6 +2,10 @@
 //!
 //! These tests verify that the sandbox actually works on the current platform.
 
+// `NetworkConfig` is only used by the proxy tests, which require the tokio
+// feature.
+#![cfg_attr(not(feature = "tokio"), allow(unused_imports))]
+
 use libsandbox::config::{EnvironmentConfig, FilesystemConfig, NetworkConfig, ResourceConfig};
 use libsandbox::Sandbox;
 use std::time::Duration;
@@ -222,33 +226,52 @@ fn test_sandbox_id_unique() {
 }
 
 #[test]
-fn test_presets() {
+fn test_composed_config_e2e() {
+    // Replacement for the deleted preset tests: compose a realistic config
+    // inline (filesystem + seccomp + rlimits) and run a command end-to-end.
+    // This is the integration-seam assurance that dropping presets lost
+    // nothing. Mirrors the working basic_exec shape (working_dir /tmp, no bind
+    // mounts to absolute host paths that would fail rootless).
+    use libsandbox::config::{FilesystemConfig, ResourceConfig, SeccompProfile, SecurityConfig};
     use tempfile::tempdir;
 
-    let temp = tempdir().expect("Failed to create temp dir");
-    let path = temp.path();
+    let _temp = tempdir().expect("Failed to create temp dir");
 
-    // Just verify presets build without error
-    let _sandbox = Sandbox::data_analysis(path, path)
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .tmpfs("/tmp", 16 * 1024 * 1024)
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .resources(
+            ResourceConfig::builder()
+                .wall_time_limit(std::time::Duration::from_secs(5))
+                .max_open_files(64)
+                .build()
+                .unwrap(),
+        )
+        .security(
+            SecurityConfig::builder()
+                .seccomp_profile(SeccompProfile::Standard)
+                .build()
+                .unwrap(),
+        )
         .build()
-        .expect("data_analysis preset failed");
+        .expect("composed config should build");
 
-    let _sandbox = Sandbox::code_judge(path)
-        .build()
-        .expect("code_judge preset failed");
-
-    let _sandbox = Sandbox::agent_executor(path)
-        .build()
-        .expect("agent_executor preset failed");
-
-    let _sandbox = Sandbox::interactive(path)
-        .build()
-        .expect("interactive preset failed");
+    let result = sandbox
+        .run("sh", &["-c", "echo composed-config-ran"])
+        .expect("run should succeed");
+    assert!(result.success(), "expected success, got: {result:?}");
+    assert_eq!(result.stdout.trim(), "composed-config-ran");
 }
 
 // ========== Network Proxy Tests ==========
 
 #[test]
+#[cfg(feature = "tokio")]
 fn test_proxied_network_setup() {
     use libsandbox::network::ProxiedNetwork;
 
@@ -275,6 +298,7 @@ fn test_proxied_network_setup() {
 }
 
 #[test]
+#[cfg(feature = "tokio")]
 fn test_sandbox_with_proxied_network() {
     let sandbox = Sandbox::builder()
         .filesystem(
@@ -303,6 +327,7 @@ fn test_sandbox_with_proxied_network() {
 }
 
 #[test]
+#[cfg(feature = "tokio")]
 fn test_proxy_env_vars_in_sandbox() {
     let sandbox = Sandbox::builder()
         .filesystem(

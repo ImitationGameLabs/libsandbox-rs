@@ -142,6 +142,14 @@ fn test_environment_isolation() {
                 .build()
                 .unwrap(),
         )
+        // clear_env defaults to false (inherit) since v0.2; opt into a clean
+        // environment here to verify the isolation mechanism.
+        .environment(
+            libsandbox::config::EnvironmentConfig::builder()
+                .clear_env(true)
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 
@@ -181,4 +189,40 @@ fn test_working_directory_confinement() {
 
     // File should exist in temp dir
     assert!(tmpdir.path().join("file.txt").exists());
+}
+
+/// Test that a `Permission::ReadOnly` bind mount blocks writes — the mount-layer
+/// mechanism that realizes a read-only "hole" inside an otherwise writable sandbox
+/// (landlock provably cannot express such a hole; see `src/landlock/decision.rs`).
+#[test]
+#[cfg(target_os = "linux")]
+fn test_readonly_mount_blocks_writes() {
+    use tempfile::tempdir;
+
+    let tmpdir = tempdir().unwrap();
+
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .mount(tmpdir.path(), "/tmp/workspace", Permission::ReadOnly)
+                .working_dir("/tmp/workspace")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+
+    // Writing through the read-only bind must be denied (EPERM/EROFS → non-zero exit),
+    // and no file must appear on the host backing dir.
+    let result = sandbox
+        .run("sh", &["-c", "echo test > /tmp/workspace/file.txt"])
+        .unwrap();
+    assert!(
+        !result.success(),
+        "write through a ReadOnly bind mount unexpectedly succeeded"
+    );
+    assert!(
+        !tmpdir.path().join("file.txt").exists(),
+        "the denied write nonetheless created a file on the host"
+    );
 }

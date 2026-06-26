@@ -2,7 +2,7 @@
 //!
 //! Handles user, mount, and UTS namespace setup.
 
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 use std::fs;
 
 /// User namespace configuration
@@ -51,6 +51,16 @@ impl UserNamespace {
         self
     }
 
+    /// The UID mapped inside the namespace.
+    pub(crate) fn inner_uid(&self) -> u32 {
+        self.inner_uid
+    }
+
+    /// The GID mapped inside the namespace.
+    pub(crate) fn inner_gid(&self) -> u32 {
+        self.inner_gid
+    }
+
     /// Write UID/GID mappings for the child process
     pub fn write_mappings(&self, child_pid: i32) -> Result<()> {
         let outer_uid = unsafe { libc::getuid() };
@@ -58,25 +68,40 @@ impl UserNamespace {
 
         // Disable setgroups to allow unprivileged gid_map writes
         let setgroups_path = format!("/proc/{}/setgroups", child_pid);
-        fs::write(&setgroups_path, "deny").map_err(|e| SandboxError::NamespaceCreation {
-            ns_type: "user".into(),
-            reason: format!("Failed to write setgroups: {}", e),
+        fs::write(&setgroups_path, "deny").map_err(|e| {
+            SandboxError::new(
+                ErrorKind::Namespace,
+                format!(
+                    "failed to create user namespace: failed to write setgroups: {}",
+                    e
+                ),
+            )
         })?;
 
         // Write UID mapping: inner_uid outer_uid 1
         let uid_map = format!("{} {} 1", self.inner_uid, outer_uid);
         let uid_map_path = format!("/proc/{}/uid_map", child_pid);
-        fs::write(&uid_map_path, &uid_map).map_err(|e| SandboxError::NamespaceCreation {
-            ns_type: "user".into(),
-            reason: format!("Failed to write uid_map: {}", e),
+        fs::write(&uid_map_path, &uid_map).map_err(|e| {
+            SandboxError::new(
+                ErrorKind::Namespace,
+                format!(
+                    "failed to create user namespace: failed to write uid_map: {}",
+                    e
+                ),
+            )
         })?;
 
         // Write GID mapping: inner_gid outer_gid 1
         let gid_map = format!("{} {} 1", self.inner_gid, outer_gid);
         let gid_map_path = format!("/proc/{}/gid_map", child_pid);
-        fs::write(&gid_map_path, &gid_map).map_err(|e| SandboxError::NamespaceCreation {
-            ns_type: "user".into(),
-            reason: format!("Failed to write gid_map: {}", e),
+        fs::write(&gid_map_path, &gid_map).map_err(|e| {
+            SandboxError::new(
+                ErrorKind::Namespace,
+                format!(
+                    "failed to create user namespace: failed to write gid_map: {}",
+                    e
+                ),
+            )
         })?;
 
         Ok(())
@@ -105,9 +130,11 @@ impl UtsNamespace {
 
     /// Setup hostname in child process
     pub fn setup_in_child(&self) -> Result<()> {
-        nix::unistd::sethostname(&self.hostname).map_err(|e| SandboxError::NamespaceCreation {
-            ns_type: "uts".into(),
-            reason: e.to_string(),
+        nix::unistd::sethostname(&self.hostname).map_err(|e| {
+            SandboxError::new(
+                ErrorKind::Namespace,
+                format!("failed to create {} namespace: {}", "uts", e),
+            )
         })?;
         Ok(())
     }

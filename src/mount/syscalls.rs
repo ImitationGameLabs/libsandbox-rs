@@ -5,7 +5,7 @@
 
 use super::ops::permission_to_remount_flags;
 use crate::config::Permission;
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
@@ -117,9 +117,13 @@ where
     let mut status_pipe: [RawFd; 2] = [-1, -1];
     let pipe_ret = unsafe { libc::pipe(status_pipe.as_mut_ptr()) };
     if pipe_ret < 0 {
-        return Err(SandboxError::DynamicMountFailed {
-            reason: format!("pipe() failed: {}", format_errno(last_errno())),
-        });
+        return Err(SandboxError::new(
+            ErrorKind::Mount,
+            format!(
+                "dynamic mount operation failed: pipe() failed: {}",
+                format_errno(last_errno())
+            ),
+        ));
     }
     let (status_r, status_w) = (status_pipe[0], status_pipe[1]);
 
@@ -128,9 +132,13 @@ where
         -1 => {
             let _ = unsafe { libc::close(status_r) };
             let _ = unsafe { libc::close(status_w) };
-            Err(SandboxError::DynamicMountFailed {
-                reason: format!("fork() failed: {}", format_errno(last_errno())),
-            })
+            Err(SandboxError::new(
+                ErrorKind::Mount,
+                format!(
+                    "dynamic mount operation failed: fork() failed: {}",
+                    format_errno(last_errno())
+                ),
+            ))
         }
         0 => {
             // --- Helper process (single-threaded after fork) ---
@@ -216,9 +224,13 @@ where
                         continue;
                     }
                     unsafe { libc::close(status_r) };
-                    return Err(SandboxError::DynamicMountFailed {
-                        reason: format!("waitpid failed: {}", format_errno(err)),
-                    });
+                    return Err(SandboxError::new(
+                        ErrorKind::Mount,
+                        format!(
+                            "dynamic mount operation failed: waitpid failed: {}",
+                            format_errno(err)
+                        ),
+                    ));
                 }
             }
 
@@ -228,25 +240,41 @@ where
             unsafe { libc::close(status_r) };
 
             if n != 1 {
-                return Err(SandboxError::DynamicMountFailed {
-                    reason: "helper process did not report status".into(),
-                });
+                return Err(SandboxError::new(
+                    ErrorKind::Mount,
+                    format!(
+                        "dynamic mount operation failed: {}",
+                        "helper process did not report status"
+                    ),
+                ));
             }
 
             match buf[0] {
                 STATUS_OK => Ok(()),
-                STATUS_ERROR => Err(SandboxError::DynamicMountFailed {
-                    reason: "helper reported generic failure".into(),
-                }),
+                STATUS_ERROR => Err(SandboxError::new(
+                    ErrorKind::Mount,
+                    format!(
+                        "dynamic mount operation failed: {}",
+                        "helper reported generic failure"
+                    ),
+                )),
                 errno_byte if errno_byte >= 2 => {
                     let errno = (errno_byte - 2) as i32;
-                    Err(SandboxError::DynamicMountFailed {
-                        reason: format!("helper failed: {}", format_errno(errno)),
-                    })
+                    Err(SandboxError::new(
+                        ErrorKind::Mount,
+                        format!(
+                            "dynamic mount operation failed: helper failed: {}",
+                            format_errno(errno)
+                        ),
+                    ))
                 }
-                _ => Err(SandboxError::DynamicMountFailed {
-                    reason: format!("helper reported unknown status: {}", buf[0]),
-                }),
+                _ => Err(SandboxError::new(
+                    ErrorKind::Mount,
+                    format!(
+                        "dynamic mount operation failed: helper reported unknown status: {}",
+                        buf[0]
+                    ),
+                )),
             }
         }
     }
@@ -341,9 +369,13 @@ pub(crate) fn probe_mount_api() -> Result<()> {
     if ret < 0 {
         let err = last_errno();
         if err == libc::ENOSYS {
-            return Err(SandboxError::DynamicMountFailed {
-                reason: "open_tree syscall not available (kernel < 5.2)".into(),
-            });
+            return Err(SandboxError::new(
+                ErrorKind::Mount,
+                format!(
+                    "dynamic mount operation failed: {}",
+                    "open_tree syscall not available (kernel < 5.2)"
+                ),
+            ));
         }
         // EBADF or similar is expected — the probe succeeded.
     }
@@ -364,9 +396,13 @@ pub(crate) fn dynamic_bind_mount(
     probe_mount_api()?;
 
     let source_cstr = CString::new(source.as_os_str().as_bytes()).map_err(|_| {
-        SandboxError::DynamicMountFailed {
-            reason: "source path contains NUL byte".into(),
-        }
+        SandboxError::new(
+            ErrorKind::Mount,
+            format!(
+                "dynamic mount operation failed: {}",
+                "source path contains NUL byte"
+            ),
+        )
     })?;
     let target_bytes = target.as_os_str().as_bytes();
     let recursive = source.is_dir();
@@ -614,7 +650,7 @@ pub(crate) fn dynamic_tmpfs(
 
 /// Check if the child process is still alive using pidfd.
 ///
-/// Returns `Ok(())` if alive, `Err(SandboxError::ChildExited)` if dead.
+/// Returns `Ok(())` if alive, `Err(SandboxError::new(crate::error::ErrorKind::ChildGone, "child process has exited"))` if dead.
 pub(crate) fn check_child_alive(pidfd: Option<RawFd>) -> Result<()> {
     if let Some(fd) = pidfd {
         // Use pidfd_send_signal with signal 0 to check existence.
@@ -630,7 +666,10 @@ pub(crate) fn check_child_alive(pidfd: Option<RawFd>) -> Result<()> {
         if ret < 0 {
             let err = last_errno();
             if err == libc::ESRCH {
-                return Err(SandboxError::ChildExited);
+                return Err(SandboxError::new(
+                    crate::error::ErrorKind::ChildGone,
+                    "child process has exited",
+                ));
             }
         }
     }

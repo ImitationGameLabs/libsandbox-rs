@@ -6,15 +6,12 @@
 //! - Detailed error types (distinguish command not found vs permission denied vs resource limit)
 
 use libsandbox::config::{FilesystemConfig, ResourceConfig};
-use libsandbox::{Permission, ResourceEnforcement, Sandbox, SandboxError};
+use libsandbox::{ErrorKind, Permission, ResourceEnforcement, Sandbox, SandboxError};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 fn is_memory_unavailable(err: &SandboxError) -> bool {
-    matches!(
-        err,
-        SandboxError::ResourceLimitUnavailable { limit, .. } if limit == "memory"
-    )
+    err.kind() == ErrorKind::Resource && err.context().contains("'memory'")
 }
 
 /// Test: Missing command should return CommandNotFound error
@@ -33,15 +30,17 @@ fn test_error_command_not_found() {
     let result = sandbox.run("nonexistent_command_xyz_123", &[]);
 
     match result {
-        Err(SandboxError::CommandNotFound(cmd)) => {
-            assert!(cmd.contains("nonexistent_command_xyz_123"));
-        }
         Err(e) => {
-            // On some systems might be ExecutionFailed
-            let msg = format!("{:?}", e);
+            // Command-not-found surfaces as an Exec-category error whose
+            // context names the missing command.
             assert!(
-                msg.contains("not found") || msg.contains("No such file"),
-                "Expected CommandNotFound error, got: {:?}",
+                matches!(e.kind(), ErrorKind::Exec | ErrorKind::Io),
+                "Expected an Exec/Io error, got: {:?}",
+                e
+            );
+            assert!(
+                e.context().contains("nonexistent_command_xyz_123"),
+                "expected context to name the missing command: {}",
                 e
             );
         }
@@ -79,20 +78,21 @@ fn test_error_permission_denied() {
 
     let result = sandbox.run(script.to_str().unwrap(), &[]);
 
-    // Should fail with some error (permission or execution related)
+    // Should fail with some exec/permission-related error, or exit non-zero.
     match result {
-        Err(SandboxError::ExecutionFailed(msg)) => {
-            // Execution failed is expected for permission issues
-            let _ = msg; // Any message is acceptable
-        }
-        Err(SandboxError::CommandNotFound(_)) => {
-            // Also acceptable since file isn't executable
-        }
-        Err(_) => {
-            // Any error is acceptable as long as it doesn't panic
+        Err(e) => {
+            // Any exec/io error is acceptable for a non-executable file.
+            assert!(
+                matches!(
+                    e.kind(),
+                    ErrorKind::Exec | ErrorKind::Io | ErrorKind::Config
+                ),
+                "Unexpected error kind for non-executable: {:?}",
+                e
+            );
         }
         Ok(r) => {
-            // If execution succeeded, exit code should be non-zero
+            // If execution succeeded, exit code should be non-zero.
             assert!(r.exit_code != 0, "Non-executable should fail");
         }
     }
@@ -118,11 +118,13 @@ fn test_error_path_not_found() {
         .build();
 
     match result {
-        Err(SandboxError::PathNotFound(path)) => {
-            assert!(path.to_string_lossy().contains("nonexistent"));
-        }
         Err(e) => {
-            panic!("Expected PathNotFound error, got: {:?}", e);
+            assert_eq!(e.kind(), ErrorKind::Mount);
+            assert!(
+                e.context().contains("nonexistent"),
+                "expected context to name the path: {}",
+                e
+            );
         }
         Ok(_) => {
             panic!("Expected error for non-existent mount path");
@@ -143,11 +145,8 @@ fn test_error_invalid_rootfs() {
         .build();
 
     match result {
-        Err(SandboxError::PathNotFound(_)) => {
-            // Expected
-        }
         Err(e) => {
-            panic!("Expected PathNotFound error for rootfs, got: {:?}", e);
+            assert_eq!(e.kind(), ErrorKind::Mount);
         }
         Ok(_) => {
             panic!("Expected error for non-existent rootfs");
@@ -184,10 +183,14 @@ fn test_graceful_cgroup_check() {
         );
     } else {
         match strict {
-            Err(SandboxError::ResourceLimitUnavailable { limit, .. }) => {
-                assert_eq!(limit, "memory");
+            Err(e) => {
+                assert_eq!(e.kind(), ErrorKind::Resource);
+                assert!(
+                    e.context().contains("'memory'"),
+                    "expected memory-related context: {}",
+                    e
+                );
             }
-            Err(e) => panic!("Expected ResourceLimitUnavailable, got: {:?}", e),
             Ok(_) => panic!("Strict mode should fail closed when memory limit cannot be enforced"),
         }
     }
@@ -214,10 +217,14 @@ fn test_graceful_cgroup_check() {
         );
     } else {
         match best_effort {
-            Err(SandboxError::ResourceLimitUnavailable { limit, .. }) => {
-                assert_eq!(limit, "memory");
+            Err(e) => {
+                assert_eq!(e.kind(), ErrorKind::Resource);
+                assert!(
+                    e.context().contains("'memory'"),
+                    "expected memory-related context: {}",
+                    e
+                );
             }
-            Err(e) => panic!("Expected ResourceLimitUnavailable, got: {:?}", e),
             Ok(_) => panic!("best-effort memory should fail closed when memory cannot be enforced"),
         }
     }
@@ -269,8 +276,13 @@ fn test_error_contains_context() {
 
     match result {
         Err(e) => {
-            let msg = format!("{:?}", e);
+            assert!(
+                matches!(e.kind(), ErrorKind::Mount | ErrorKind::Config),
+                "Expected a Mount/Config error, got: {:?}",
+                e
+            );
             // Error should mention the problematic path
+            let msg = e.to_string();
             assert!(
                 msg.contains("nonexistent") || msg.contains("specific"),
                 "Error should contain context about the problem: {}",
@@ -301,9 +313,8 @@ fn test_validation_reports_issues() {
 
     // Error should be validation-related
     match result {
-        Err(SandboxError::PathNotFound(_)) => { /* Good */ }
         Err(e) => {
-            panic!("Expected PathNotFound during validation, got: {:?}", e);
+            assert_eq!(e.kind(), ErrorKind::Mount);
         }
         Ok(_) => unreachable!(),
     }

@@ -5,6 +5,9 @@
 //! - Parallel execution safety
 //! - Cgroup name collision prevention (Linux)
 
+// `NetworkConfig` is only used by the proxy concurrency test (tokio feature).
+#![cfg_attr(not(feature = "tokio"), allow(unused_imports))]
+
 use libsandbox::config::{EnvironmentConfig, FilesystemConfig, NetworkConfig, ResourceConfig};
 use libsandbox::{ResourceEnforcement, Sandbox};
 use std::collections::HashSet;
@@ -171,6 +174,7 @@ fn test_cgroup_no_conflicts() {
 
 /// Test: Concurrent proxy operations should not conflict
 #[test]
+#[cfg(feature = "tokio")]
 fn test_concurrent_proxy_no_conflicts() {
     let mut handles = vec![];
 

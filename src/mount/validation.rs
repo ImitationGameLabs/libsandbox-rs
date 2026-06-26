@@ -1,6 +1,6 @@
 //! Path validation for dynamic mount operations.
 
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -16,19 +16,27 @@ const CRITICAL_PATHS: &[&[u8]] = &[b"/", b"/proc", b"/sys", b"/dev", b"/run", b"
 pub(crate) fn validate_mount_target(target: &Path) -> Result<()> {
     // Must be absolute.
     if !target.has_root() {
-        return Err(SandboxError::InvalidMountPath {
-            path: target.to_path_buf(),
-            reason: "target path must be absolute".into(),
-        });
+        return Err(SandboxError::new(
+            ErrorKind::Mount,
+            format!(
+                "invalid mount path {}: {}",
+                target.to_path_buf().display(),
+                "target path must be absolute"
+            ),
+        ));
     }
 
     // Must not contain ".." components.
     for component in target.components() {
         if let std::path::Component::ParentDir = component {
-            return Err(SandboxError::InvalidMountPath {
-                path: target.to_path_buf(),
-                reason: "target path must not contain '..' components".into(),
-            });
+            return Err(SandboxError::new(
+                ErrorKind::Mount,
+                format!(
+                    "invalid mount path {}: {}",
+                    target.to_path_buf().display(),
+                    "target path must not contain '..' components"
+                ),
+            ));
         }
     }
 
@@ -41,13 +49,14 @@ pub(crate) fn validate_mount_target(target: &Path) -> Result<()> {
             && target_bytes[..critical.len()] == critical[..]
             && target_bytes[critical.len()] == b'/';
         if is_exact || is_prefix {
-            return Err(SandboxError::InvalidMountPath {
-                path: target.to_path_buf(),
-                reason: format!(
-                    "target path must not overlap with critical path {}",
+            return Err(SandboxError::new(
+                ErrorKind::Mount,
+                format!(
+                    "invalid mount path {}: target path must not overlap with critical path {}",
+                    target.to_path_buf().display(),
                     String::from_utf8_lossy(critical)
                 ),
-            });
+            ));
         }
     }
 
@@ -60,7 +69,10 @@ pub(crate) fn validate_mount_target(target: &Path) -> Result<()> {
 /// - Must exist on the host filesystem
 pub(crate) fn validate_mount_source(source: &Path) -> Result<()> {
     if !source.exists() {
-        return Err(SandboxError::PathNotFound(source.to_path_buf()));
+        return Err(SandboxError::new(
+            ErrorKind::Mount,
+            format!("path not found: {}", source.display()),
+        ));
     }
     Ok(())
 }

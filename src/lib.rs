@@ -57,6 +57,8 @@ pub mod cgroup;
 pub mod config;
 pub mod error;
 pub mod executor;
+#[cfg(all(target_os = "linux", feature = "landlock"))]
+pub mod landlock;
 pub mod mount;
 pub mod namespace;
 pub mod network;
@@ -69,20 +71,38 @@ pub mod stdio;
 // Re-exports: types from config modules (maintaining backward-compatible paths)
 pub use config::{
     CgroupLimitRequests, EnvironmentBuilder, EnvironmentConfig, ExecutionPolicy, FilesystemBuilder,
-    FilesystemConfig, Mount, MountOptions, NetworkBuilder, NetworkConfig, NetworkMode, Permission,
-    ResourceConfig, ResourceEnforcement, SeccompProfile, SecurityBuilder, SecurityConfig,
+    FilesystemConfig, Mount, MountFlags, NamespaceBuilder, NamespaceConfig, NetworkBuilder,
+    NetworkConfig, NetworkMode, Permission, ResourceConfig, ResourceEnforcement, SeccompProfile,
+    SecurityBuilder, SecurityConfig,
 };
 // Re-exports: builder and core types
 pub use builder::{SandboxBuilder, SandboxConfig};
-pub use error::{Result, SandboxError};
+pub use error::{ChildStage, ErrorKind, Result, SandboxError};
 pub use mount::{DynamicMount, MountHandle};
-pub use process::{Child, ExitStatus};
+pub use process::{
+    install_rlimits, install_seccomp, prepare_rlimits, prepare_sandbox, prepare_seccomp,
+    run_prepared, Child, ChildCtx, ChildPayload, ChildSetup, ExitStatus, PreparedRlimits,
+    PreparedSandbox,
+};
 pub use result::{
     ExecutionDiagnostics, ExecutionReport, ExecutionResult, LimitDiagnostics, LimitStatus,
     MetricDiagnostics, MetricStatus,
 };
 pub use sandbox::{Sandbox, SpawnBuilder};
 pub use stdio::Stdio;
+
+// Landlock mechanism (optional, feature-gated). Each item gated individually so the
+// crate compiles cleanly with the feature off.
+#[cfg(all(target_os = "linux", feature = "landlock"))]
+pub use landlock::{
+    install_landlock, landlock_hook, prepare_landlock, AccessDecision, PreparedLandlock, ReadPolicy,
+};
+
+// Mount read-only-hole primitives (Linux only; libc syscalls, no extra dependency). A
+// child-side prepare/install pair mirroring the landlock/seccomp primitives, intended for
+// a caller-driven `pre_exec`.
+#[cfg(target_os = "linux")]
+pub use mount::holes::{install_mount_holes, prepare_mount_holes, PreparedMountHoles};
 
 /// 1 KB in bytes
 pub const KB: u64 = 1024;

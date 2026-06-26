@@ -2,7 +2,7 @@
 //!
 //! Manages the lifecycle of the HTTP proxy and network configuration.
 
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 use crate::network::HttpProxy;
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -39,7 +39,12 @@ impl ProxiedNetwork {
                 .worker_threads(2)
                 .enable_all()
                 .build()
-                .map_err(|e| SandboxError::Internal(format!("Failed to create runtime: {}", e)))?,
+                .map_err(|e| {
+                    SandboxError::new(
+                        ErrorKind::Network,
+                        format!("Failed to create runtime: {}", e),
+                    )
+                })?,
         );
 
         // Create shutdown channel
@@ -92,10 +97,12 @@ impl ProxiedNetwork {
     /// Find a free port to listen on
     fn find_free_port() -> Result<u16> {
         let listener = TcpListener::bind("127.0.0.1:0")
-            .map_err(|e| SandboxError::Internal(format!("Failed to bind: {}", e)))?;
+            .map_err(|e| SandboxError::new(ErrorKind::Network, format!("Failed to bind: {}", e)))?;
         let port = listener
             .local_addr()
-            .map_err(|e| SandboxError::Internal(format!("Failed to get addr: {}", e)))?
+            .map_err(|e| {
+                SandboxError::new(ErrorKind::Network, format!("Failed to get addr: {}", e))
+            })?
             .port();
         Ok(port)
     }

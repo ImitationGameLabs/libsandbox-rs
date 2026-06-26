@@ -8,7 +8,12 @@ pub enum NetworkMode {
     None,
     /// Use host network (not recommended, breaks isolation).
     Host,
-    /// Network access through proxy with domain whitelist.
+    /// Network access through an HTTP proxy with a domain whitelist.
+    ///
+    /// Only available with the `tokio` feature (the proxy is a tokio runtime).
+    /// Without the feature this variant cannot be constructed, so requesting
+    /// proxied networking on a tokio-less build is rejected at compile time.
+    #[cfg(feature = "tokio")]
     Proxied { allowed_domains: Vec<String> },
 }
 
@@ -38,7 +43,9 @@ impl NetworkConfig {
         }
     }
 
-    /// Shorthand: proxied network with domain whitelist.
+    /// Shorthand: proxied network with domain whitelist. Requires the `tokio`
+    /// feature.
+    #[cfg(feature = "tokio")]
     pub fn proxied(domains: &[&str]) -> Self {
         Self {
             mode: NetworkMode::Proxied {
@@ -80,7 +87,9 @@ impl NetworkBuilder {
         self
     }
 
-    /// Allow network access only to specified domains.
+    /// Allow network access only to specified domains. Requires the `tokio`
+    /// feature.
+    #[cfg(feature = "tokio")]
     pub fn proxied(mut self, domains: &[&str]) -> Self {
         self.config.mode = NetworkMode::Proxied {
             allowed_domains: domains.iter().map(|s| s.to_string()).collect(),

@@ -14,6 +14,10 @@ impl Default for EnvironmentConfig {
     fn default() -> Self {
         Self {
             env: HashMap::new(),
+            // Secure-by-default: a sandbox should isolate the environment
+            // (which may carry host secrets and host-specific paths) rather
+            // than silently inherit it. Callers who want to inherit the parent
+            // environment opt in explicitly via `.clear_env(false)`.
             clear_env: true,
             hostname: "sandbox".into(),
         }
@@ -59,7 +63,12 @@ impl EnvironmentBuilder {
         self
     }
 
-    /// Whether to clear inherited environment variables (default: true).
+    /// Whether to clear inherited environment variables (default: `true`).
+    ///
+    /// With `clear_env(true)` (the default) the child starts with a clean
+    /// environment containing only the explicitly-set variables (plus a default
+    /// `PATH`). Pass `false` to inherit the parent's environment overlaid with
+    /// anything set via [`env`](Self::env).
     pub fn clear_env(mut self, clear: bool) -> Self {
         self.config.clear_env = clear;
         self

@@ -1,130 +1,186 @@
 //! Error types for libsandbox.
 //!
-//! This module defines the shared error surface used by the one-shot
-//! execution API and the spawn-based persistent process API.
+//! [`SandboxError`] is a flat `{ kind, context }` struct rather than a large
+//! enum: the historical variants carried typed fields (`MemoryExceeded {
+//! used, limit }`, `Timeout { duration }`, …) that no caller ever destructured
+//! — they were display-only, and the same data is already available on
+//! [`crate::result::ExecutionResult`] / [`crate::result::ExecutionReport`] as
+//! typed fields. Collapsing to a kind discriminator + context string halves
+//! the type surface (one struct + one enum) while keeping the only thing
+//! callers actually do with errors: match on [`ErrorKind`] via [`kind`](SandboxError::kind).
+//!
+//! Child-side setup failures arrive over the spawn error-pipe as a
+//! `[tag:u8][msg:bytes]` frame; the parent decodes the tag into a [`ChildStage`]
+//! and builds the context string.
 
-use std::path::PathBuf;
-use thiserror::Error;
+/// Coarse discriminator for programmatic error matching.
+///
+/// Use [`SandboxError::kind`] to obtain this from any error, then match on it
+/// instead of stringifying the error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// Platform not supported / feature unavailable.
+    Platform,
+    /// Namespace creation or entry, user-namespace disabled.
+    Namespace,
+    /// Mount, bind, pivot, dynamic mount, mount path validation.
+    Mount,
+    /// Cgroup creation, controller availability, control-file writes.
+    Cgroup,
+    /// Seccomp / security filter build or load, blocked syscall.
+    Seccomp,
+    /// Landlock filesystem-access ruleset build, support probe, or `restrict_self`.
+    Landlock,
+    /// Resource limit (cgroup-backed or rlimit) unavailable or exceeded.
+    Resource,
+    /// Network policy denial.
+    Network,
+    /// Process execution: command not found, exec failure, signal exit, child setup.
+    Exec,
+    /// Execution timeout.
+    Timeout,
+    /// Configuration / validation error.
+    Config,
+    /// Underlying IO error.
+    Io,
+    /// The child process has already exited.
+    ChildGone,
+    /// Anything not covered by a dedicated variant.
+    Other,
+}
 
-/// Main error type for libsandbox operations.
-#[derive(Error, Debug)]
-pub enum SandboxError {
-    // Platform errors
-    #[error("Platform not supported: {platform}")]
-    PlatformNotSupported { platform: String },
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Platform => "platform",
+            Self::Namespace => "namespace",
+            Self::Mount => "mount",
+            Self::Cgroup => "cgroup",
+            Self::Seccomp => "seccomp",
+            Self::Landlock => "landlock",
+            Self::Resource => "resource",
+            Self::Network => "network",
+            Self::Exec => "exec",
+            Self::Timeout => "timeout",
+            Self::Config => "config",
+            Self::Io => "io",
+            Self::ChildGone => "child-gone",
+            Self::Other => "other",
+        };
+        f.write_str(s)
+    }
+}
 
-    #[error("Platform feature not available: {feature}")]
-    PlatformFeatureUnavailable { feature: String },
+/// Lifecycle stage of the sandboxed child at which a setup failure occurred.
+///
+/// Doubles as the on-wire tag for the spawn error-pipe (`[tag:u8][msg:bytes]`):
+/// the child writes the discriminant, the parent maps it back via [`from_tag`](Self::from_tag).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ChildStage {
+    /// Generic startup failure (e.g. abort before a specific stage ran).
+    Startup = 0,
+    /// Closing / arranging inherited file descriptors.
+    Fd = 1,
+    /// `dup2` of stdio fds.
+    Dup2 = 2,
+    /// `sethostname` (UTS namespace).
+    Sethostname = 3,
+    /// Mount namespace setup (bind / tmpfs / procfs / pivot).
+    Mount = 4,
+    /// `chdir` to working directory.
+    Chdir = 5,
+    /// `setrlimit` resource limits.
+    Rlimit = 6,
+    /// seccomp filter load.
+    Seccomp = 7,
+    /// Caller-supplied [`crate::ChildSetup`] hook.
+    Hook = 8,
+    /// `execvpe` of the target program.
+    Exec = 9,
+}
 
-    // Linux-specific
-    #[error("Unprivileged user namespaces disabled. Run: sudo sysctl kernel.unprivileged_userns_clone=1")]
-    UserNamespaceDisabled,
+impl ChildStage {
+    /// Decode a wire tag byte into a stage. Unknown bytes map to [`Startup`].
+    ///
+    /// [`Startup`]: ChildStage::Startup
+    pub fn from_tag(tag: u8) -> Self {
+        match tag {
+            x if x == Self::Fd as u8 => Self::Fd,
+            x if x == Self::Dup2 as u8 => Self::Dup2,
+            x if x == Self::Sethostname as u8 => Self::Sethostname,
+            x if x == Self::Mount as u8 => Self::Mount,
+            x if x == Self::Chdir as u8 => Self::Chdir,
+            x if x == Self::Rlimit as u8 => Self::Rlimit,
+            x if x == Self::Seccomp as u8 => Self::Seccomp,
+            x if x == Self::Hook as u8 => Self::Hook,
+            x if x == Self::Exec as u8 => Self::Exec,
+            _ => Self::Startup,
+        }
+    }
+}
 
-    #[error("Cgroups v2 not available or not mounted")]
-    CgroupV2Unavailable,
+impl std::fmt::Display for ChildStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Startup => "startup",
+            Self::Fd => "fd-setup",
+            Self::Dup2 => "dup2",
+            Self::Sethostname => "sethostname",
+            Self::Mount => "mount",
+            Self::Chdir => "chdir",
+            Self::Rlimit => "rlimit",
+            Self::Seccomp => "seccomp",
+            Self::Hook => "child-hook",
+            Self::Exec => "exec",
+        };
+        f.write_str(s)
+    }
+}
 
-    #[error("Failed to create {ns_type} namespace: {reason}")]
-    NamespaceCreation { ns_type: String, reason: String },
+/// The libsandbox error type: a coarse [`ErrorKind`] plus a human-readable
+/// context string.
+///
+/// Construct with [`SandboxError::new`]; IO/FFI errors convert via `?`
+/// (`From<io::Error>`, `From<NulError>`). Match on [`kind`](Self::kind) for
+/// programmatic decisions.
+#[derive(thiserror::Error, Debug)]
+#[error("{kind}: {context}")]
+pub struct SandboxError {
+    kind: ErrorKind,
+    context: Box<str>,
+}
 
-    #[error("Failed to enter namespace: {0}")]
-    NamespaceEnter(String),
+impl SandboxError {
+    /// Build an error from a kind and an arbitrary context string.
+    pub fn new(kind: ErrorKind, context: impl Into<Box<str>>) -> Self {
+        Self {
+            kind,
+            context: context.into(),
+        }
+    }
 
-    // Mount/filesystem errors
-    #[error("Mount failed: {src} -> {target}: {reason}")]
-    MountFailed {
-        src: PathBuf,
-        target: PathBuf,
-        reason: String,
-    },
+    /// Coarse category of this error for programmatic matching.
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
 
-    #[error("Path not found: {0}")]
-    PathNotFound(PathBuf),
+    /// The human-readable context string.
+    pub fn context(&self) -> &str {
+        &self.context
+    }
+}
 
-    #[error("Invalid mount permission for {path}: {reason}")]
-    InvalidMountPermission { path: PathBuf, reason: String },
+impl From<std::io::Error> for SandboxError {
+    fn from(e: std::io::Error) -> Self {
+        Self::new(ErrorKind::Io, e.to_string())
+    }
+}
 
-    // Cgroup errors (Linux)
-    #[error("Failed to create cgroup: {0}")]
-    CgroupCreation(String),
-
-    #[error("Failed to set {controller}.{setting} = {value}: {reason}")]
-    CgroupSetting {
-        controller: String,
-        setting: String,
-        value: String,
-        reason: String,
-    },
-
-    #[error("Cgroup controller '{controller}' not available. Available: {available}. Rootless mode requires cgroup v2 delegation.")]
-    CgroupControllerUnavailable {
-        controller: String,
-        available: String,
-    },
-
-    #[error("Resource limit '{limit}' cannot be enforced: {reason}")]
-    ResourceLimitUnavailable { limit: String, reason: String },
-
-    // Seccomp/security errors
-    #[error("Failed to load security filter: {0}")]
-    SecurityFilterLoad(String),
-
-    #[error("Seccomp filter build failed: {0}")]
-    SeccompFilterBuild(String),
-
-    #[error("Syscall blocked: {syscall}")]
-    SyscallBlocked { syscall: String },
-
-    // Execution errors
-    #[error("Execution timeout after {duration:?}")]
-    Timeout { duration: std::time::Duration },
-
-    #[error("Memory limit exceeded: used {used} bytes, limit {limit} bytes")]
-    MemoryExceeded { used: u64, limit: u64 },
-
-    #[error("Process limit exceeded: {count} processes, limit {limit}")]
-    ProcessLimitExceeded { count: u32, limit: u32 },
-
-    #[error("Process killed by signal: {signal}")]
-    Killed { signal: i32 },
-
-    #[error("Command not found: {0}")]
-    CommandNotFound(String),
-
-    #[error("Execution failed: {0}")]
-    ExecutionFailed(String),
-
-    // Network errors
-    #[error("Network access denied: {domain}")]
-    NetworkDenied { domain: String },
-
-    // IO errors
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("NulError: {0}")]
-    NulError(#[from] std::ffi::NulError),
-
-    // Configuration errors
-    #[error("Configuration error: {0}")]
-    Config(String),
-
-    // Spawn errors
-    #[error("sandbox setup failed: {0}")]
-    SetupFailed(String),
-
-    // Dynamic mount errors
-    #[error("Dynamic mount operation failed: {reason}")]
-    DynamicMountFailed { reason: String },
-
-    #[error("Invalid mount path {path}: {reason}")]
-    InvalidMountPath { path: PathBuf, reason: String },
-
-    #[error("Child process has exited")]
-    ChildExited,
-
-    // Other
-    #[error("Internal error: {0}")]
-    Internal(String),
+impl From<std::ffi::NulError> for SandboxError {
+    fn from(e: std::ffi::NulError) -> Self {
+        Self::new(ErrorKind::Config, e.to_string())
+    }
 }
 
 /// Result type alias for libsandbox operations.

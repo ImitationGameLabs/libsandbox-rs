@@ -4,9 +4,10 @@
 
 use crate::config::ResourceEnforcement;
 use crate::config::{
-    EnvironmentConfig, FilesystemConfig, NetworkConfig, ResourceConfig, SecurityConfig,
+    EnvironmentConfig, FilesystemConfig, NamespaceConfig, NetworkConfig, ResourceConfig,
+    SecurityConfig,
 };
-use crate::error::{Result, SandboxError};
+use crate::error::{ErrorKind, Result, SandboxError};
 use crate::sandbox::Sandbox;
 
 /// Sandbox configuration — a composition of domain configs.
@@ -20,12 +21,13 @@ pub struct SandboxConfig {
     pub network: NetworkConfig,
     pub security: SecurityConfig,
     pub environment: EnvironmentConfig,
+    pub namespace: NamespaceConfig,
 }
 
 /// Sandbox builder — an aggregator for domain configs.
 ///
-/// Construct via [`Sandbox::builder()`] or one of the preset methods
-/// ([`Sandbox::code_judge`], [`Sandbox::agent_executor`], etc.).
+/// Construct via [`Sandbox::builder()`] and compose domain configs explicitly
+/// (preset constructors were removed in favor of explicit composition).
 /// Each domain has its own builder (e.g., [`ResourceConfig::builder()`])
 /// that produces a typed config struct. Use the consume methods
 /// (`.filesystem()`, `.resources()`, etc.) to set domain configs.
@@ -63,6 +65,7 @@ pub struct SandboxBuilder {
     pub(crate) network: NetworkConfig,
     pub(crate) security: SecurityConfig,
     pub(crate) environment: EnvironmentConfig,
+    pub(crate) namespace: NamespaceConfig,
 }
 
 impl Default for SandboxBuilder {
@@ -80,6 +83,7 @@ impl SandboxBuilder {
             network: NetworkConfig::default(),
             security: SecurityConfig::default(),
             environment: EnvironmentConfig::default(),
+            namespace: NamespaceConfig::default(),
         }
     }
 
@@ -115,6 +119,12 @@ impl SandboxBuilder {
         self
     }
 
+    /// Set the namespace configuration.
+    pub fn namespace(mut self, config: NamespaceConfig) -> Self {
+        self.namespace = config;
+        self
+    }
+
     // ========== Build ==========
 
     /// Build the sandbox.
@@ -126,6 +136,7 @@ impl SandboxBuilder {
             network: self.network,
             security: self.security,
             environment: self.environment,
+            namespace: self.namespace,
         };
         let execution_policy = config.resources.to_execution_policy();
         Sandbox::from_config(config, execution_policy)
@@ -137,14 +148,20 @@ impl SandboxBuilder {
         // Validate mount source paths exist.
         for mount in &self.filesystem.mounts {
             if !mount.source.exists() {
-                return Err(SandboxError::PathNotFound(mount.source.clone()));
+                return Err(SandboxError::new(
+                    ErrorKind::Mount,
+                    format!("path not found: {}", mount.source.display()),
+                ));
             }
         }
 
         // Validate rootfs if specified.
         if let Some(rootfs) = &self.filesystem.rootfs {
             if !rootfs.exists() || !rootfs.is_dir() {
-                return Err(SandboxError::PathNotFound(rootfs.clone()));
+                return Err(SandboxError::new(
+                    ErrorKind::Mount,
+                    format!("path not found: {}", rootfs.display()),
+                ));
             }
         }
 
@@ -161,10 +178,14 @@ impl SandboxBuilder {
             && !nix::unistd::geteuid().is_root()
             && !support.can_enforce(CgroupController::Memory)
         {
-            return Err(SandboxError::ResourceLimitUnavailable {
-                limit: "memory".into(),
-                reason: support.unavailable_reason(Some(CgroupController::Memory)),
-            });
+            return Err(SandboxError::new(
+                ErrorKind::Resource,
+                format!(
+                    "resource limit '{}' cannot be enforced: {}",
+                    "memory",
+                    support.unavailable_reason(Some(CgroupController::Memory))
+                ),
+            ));
         }
 
         let strict_limits = [
@@ -193,10 +214,14 @@ impl SandboxBuilder {
                     continue;
                 }
                 if !support.can_enforce(controller) {
-                    return Err(SandboxError::ResourceLimitUnavailable {
-                        limit: name.into(),
-                        reason: support.unavailable_reason(Some(controller)),
-                    });
+                    return Err(SandboxError::new(
+                        ErrorKind::Resource,
+                        format!(
+                            "resource limit '{}' cannot be enforced: {}",
+                            name,
+                            support.unavailable_reason(Some(controller))
+                        ),
+                    ));
                 }
             }
         }
@@ -204,9 +229,7 @@ impl SandboxBuilder {
         // Check user namespace support.
         if let Ok(content) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
             if content.trim() == "0" {
-                return Err(SandboxError::Config(
-                    "Unprivileged user namespaces disabled. Run: sudo sysctl kernel.unprivileged_userns_clone=1".into()
-                ));
+                return Err(SandboxError::new(ErrorKind::Config, format!("configuration error: {}", "Unprivileged user namespaces disabled. Run: sudo sysctl kernel.unprivileged_userns_clone=1")));
             }
         }
 
@@ -272,11 +295,14 @@ mod tests {
         let config = NetworkConfig::host();
         assert!(matches!(config.mode, crate::config::NetworkMode::Host));
 
-        let config = NetworkConfig::proxied(&["example.com"]);
-        assert!(matches!(
-            config.mode,
-            crate::config::NetworkMode::Proxied { .. }
-        ));
+        #[cfg(feature = "tokio")]
+        {
+            let config = NetworkConfig::proxied(&["example.com"]);
+            assert!(matches!(
+                config.mode,
+                crate::config::NetworkMode::Proxied { .. }
+            ));
+        }
     }
 
     #[test]

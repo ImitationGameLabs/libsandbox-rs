@@ -12,6 +12,7 @@ mod error_handling;
 #[path = "integration/concurrency.rs"]
 mod concurrency;
 
+#[cfg(feature = "tokio")]
 #[path = "integration/proxy_advanced.rs"]
 mod proxy_advanced;
 

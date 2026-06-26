@@ -1,15 +1,12 @@
 //! Resource limits tests
 
 use libsandbox::config::{FilesystemConfig, ResourceConfig};
-use libsandbox::{ResourceEnforcement, Sandbox, SandboxError, MB};
+use libsandbox::{ErrorKind, ResourceEnforcement, Sandbox, SandboxError, MB};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 fn is_memory_unavailable(err: &SandboxError) -> bool {
-    matches!(
-        err,
-        SandboxError::ResourceLimitUnavailable { limit, .. } if limit == "memory"
-    )
+    err.kind() == ErrorKind::Resource && err.context().contains("'memory'")
 }
 
 /// Wall time limit test

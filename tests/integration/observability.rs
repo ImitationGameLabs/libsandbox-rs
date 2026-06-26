@@ -6,15 +6,12 @@
 //! - Security audit logging
 
 use libsandbox::config::{FilesystemConfig, ResourceConfig};
-use libsandbox::{ResourceEnforcement, Sandbox, SandboxError};
+use libsandbox::{ErrorKind, ResourceEnforcement, Sandbox, SandboxError};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 fn is_memory_unavailable(err: &SandboxError) -> bool {
-    matches!(
-        err,
-        SandboxError::ResourceLimitUnavailable { limit, .. } if limit == "memory"
-    )
+    err.kind() == ErrorKind::Resource && err.context().contains("'memory'")
 }
 
 /// Test: ExecutionResult should contain timing information

@@ -5,9 +5,33 @@
 //!
 //! Run with: cargo run --example code_judge
 
-use libsandbox::config::ResourceConfig;
-use libsandbox::Sandbox;
+use libsandbox::config::{
+    FilesystemConfig, NetworkConfig, ResourceConfig, SeccompProfile, SecurityConfig,
+};
+use libsandbox::{Permission, Sandbox, SandboxBuilder};
+use std::path::Path;
 use std::time::Duration;
+
+/// Compose the old `code_judge` preset inline via the builder. Presets were
+/// removed in favor of explicit composition.
+fn code_judge_builder(workspace: &Path) -> SandboxBuilder {
+    Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .mount(workspace, "/workspace", Permission::ReadOnly)
+                .tmpfs("/tmp", 64 * 1024 * 1024)
+                .working_dir("/workspace")
+                .build()
+                .expect("preset config is valid"),
+        )
+        .network(NetworkConfig::none())
+        .security(
+            SecurityConfig::builder()
+                .seccomp_profile(SeccompProfile::Strict)
+                .build()
+                .expect("preset config is valid"),
+        )
+}
 
 /// Test case structure
 struct TestCase {
@@ -67,7 +91,7 @@ print(a + b)
         print!("Test #{}: ", i + 1);
 
         // Create sandbox with code_judge preset, override resource limits
-        let sandbox = Sandbox::code_judge(&submission_dir)
+        let sandbox = code_judge_builder(&submission_dir)
             .resources(
                 ResourceConfig::builder()
                     .memory_limit(256 * 1024 * 1024)
@@ -160,7 +184,7 @@ print("42")  # Still output something
 
     std::fs::write(&solution_path, malicious).unwrap();
 
-    let sandbox = Sandbox::code_judge(&submission_dir)
+    let sandbox = code_judge_builder(&submission_dir)
         .resources(
             ResourceConfig::builder()
                 .memory_limit(256 * 1024 * 1024)

@@ -5,13 +5,8 @@
 //! `Standard`, `Permissive`) cover most use-cases; a builder API allows
 //! fine-grained customization.
 //!
-//! **Architecture**: x86_64 only (gated by `#[cfg(target_arch = "x86_64")]`).
-
-#[cfg(all(target_os = "linux", not(target_arch = "x86_64")))]
-compile_error!(
-    "libsandbox seccomp filtering currently requires x86_64. \
-     Contributions for other architectures are welcome."
-);
+//! **Architecture**: x86_64 and aarch64. Other arches fail to compile via the
+//! per-arch `AUDIT_ARCH` guard in `bpf.rs`.
 
 mod bpf;
 mod builder;
@@ -86,13 +81,6 @@ pub(super) struct Rule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SeccompProfile;
-
-    #[test]
-    fn test_seccomp_disabled() {
-        let result = SeccompFilter::apply(&SeccompProfile::Disabled);
-        assert!(result.is_ok());
-    }
 
     #[test]
     fn test_strict_builder_compiles() {
@@ -227,7 +215,7 @@ mod tests {
             }
 
             let code = instr.code as u32;
-            if code == libc::BPF_JMP as u32 {
+            if code == libc::BPF_JMP {
                 // BPF_JA (unconditional): k field is the jump offset.
                 let target = i + 1 + instr.k as usize;
                 assert!(
@@ -424,7 +412,7 @@ mod tests {
 
     #[test]
     fn test_trap_action_compiled_in_bpf() {
-        let rules = vec![Rule {
+        let rules = [Rule {
             syscall_nr: libc::SYS_ptrace as i32,
             action: SeccompAction::Trap.to_bpf_ret(),
         }];
@@ -438,7 +426,7 @@ mod tests {
 
     #[test]
     fn test_kill_thread_action_compiled_in_bpf() {
-        let rules = vec![Rule {
+        let rules = [Rule {
             syscall_nr: libc::SYS_ptrace as i32,
             action: SeccompAction::KillThread.to_bpf_ret(),
         }];
@@ -453,7 +441,7 @@ mod tests {
     #[test]
     fn test_errno_action_compiled_in_bpf() {
         // Use EPERM (1) to distinguish from deny_with_errno test which uses 13.
-        let rules = vec![Rule {
+        let rules = [Rule {
             syscall_nr: libc::SYS_mount as i32,
             action: SeccompAction::Errno(1).to_bpf_ret(),
         }];
@@ -494,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_log_action_compiled_in_bpf() {
-        let rules = vec![Rule {
+        let rules = [Rule {
             syscall_nr: libc::SYS_ptrace as i32,
             action: SeccompAction::Log.to_bpf_ret(),
         }];

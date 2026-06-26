@@ -5,15 +5,12 @@
 //! - OOM detection from cgroup events (Linux)
 
 use libsandbox::config::{FilesystemConfig, ResourceConfig};
-use libsandbox::{MetricStatus, ResourceEnforcement, Sandbox, SandboxError};
+use libsandbox::{ErrorKind, MetricStatus, ResourceEnforcement, Sandbox, SandboxError};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 fn is_memory_unavailable(err: &SandboxError) -> bool {
-    matches!(
-        err,
-        SandboxError::ResourceLimitUnavailable { limit, .. } if limit == "memory"
-    )
+    err.kind() == ErrorKind::Resource && err.context().contains("'memory'")
 }
 
 /// Test: Max open files limit should be enforced via setrlimit

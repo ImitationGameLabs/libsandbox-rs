@@ -3,7 +3,7 @@
 //! Provides raw fd I/O helpers, RAII guard, pidfd/namespace fd openers,
 //! and child process cleanup primitives used during spawn and wait.
 
-use crate::error::SandboxError;
+use crate::error::{ChildStage, ErrorKind, SandboxError};
 use std::os::fd::{AsFd, FromRawFd};
 use std::os::unix::io::RawFd;
 
@@ -119,7 +119,7 @@ pub(super) fn open_namespace_fd(pid: i32, ns_type: &str) -> Option<std::os::fd::
 }
 
 /// Close the ready pipe and kill+reap the child, returning the error message
-/// as a [`SandboxError::Internal`].
+/// as a [`SandboxError`] at [`ChildStage::Startup`].
 pub(super) fn abort_child_startup(
     child_pid: nix::unistd::Pid,
     ready_write: &mut AutoCloseFd,
@@ -127,7 +127,10 @@ pub(super) fn abort_child_startup(
 ) -> SandboxError {
     let _ = ready_write.close();
     kill_and_reap(child_pid);
-    SandboxError::Internal(message)
+    SandboxError::new(
+        ErrorKind::Exec,
+        format!("child setup failed at {}: {}", ChildStage::Startup, message),
+    )
 }
 
 /// Send SIGKILL then poll for up to 100ms to reap the child.

@@ -46,6 +46,9 @@ pub(super) enum CgroupFile {
     CpuStat,
     PidsMax,
     Freeze,
+    /// `cgroup.kill` (kernel ≥5.14): writing "1" atomically kills every
+    /// process in the cgroup.
+    Kill,
 }
 
 impl CgroupFile {
@@ -63,6 +66,7 @@ impl CgroupFile {
             Self::CpuStat => "cpu.stat",
             Self::PidsMax => "pids.max",
             Self::Freeze => "cgroup.freeze",
+            Self::Kill => "cgroup.kill",
         }
     }
 }
@@ -74,6 +78,4 @@ pub use manager::{
     CpuStats, MemoryEvents, MemoryStats,
 };
 
-pub(crate) use limits::{
-    apply_resource_limits, collect_linux_metrics, configure_cgroup, needs_cgroup, LimitPlan,
-};
+pub(crate) use limits::{collect_linux_metrics, configure_cgroup, needs_cgroup, LimitPlan};

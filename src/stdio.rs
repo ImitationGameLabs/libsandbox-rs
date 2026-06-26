@@ -116,7 +116,7 @@ impl StdioSlot {
     /// opened. For `Owned`, the fd is extracted without closing it in the
     /// parent. For `Inherit`, both sides are `None`.
     pub fn resolve(stdio: Stdio, role: StreamRole) -> crate::error::Result<Self> {
-        use crate::error::SandboxError;
+        use crate::error::{ErrorKind, SandboxError};
         use std::os::unix::io::{FromRawFd, IntoRawFd};
 
         match stdio {
@@ -133,7 +133,7 @@ impl StdioSlot {
                     .write(true)
                     .open("/dev/null")
                     .map_err(|e| {
-                        SandboxError::Internal(format!("open /dev/null for {role}: {e}"))
+                        SandboxError::new(ErrorKind::Io, format!("open /dev/null for {role}: {e}"))
                     })?;
                 // into_raw_fd() consumes the File; fd stays open.
                 let fd = file.into_raw_fd();
@@ -146,8 +146,9 @@ impl StdioSlot {
             }
 
             Stdio::Pipe => {
-                let (read_end, write_end) = nix::unistd::pipe()
-                    .map_err(|e| SandboxError::Internal(format!("create pipe for {role}: {e}")))?;
+                let (read_end, write_end) = nix::unistd::pipe().map_err(|e| {
+                    SandboxError::new(ErrorKind::Io, format!("create pipe for {role}: {e}"))
+                })?;
                 let r: RawFd = read_end.into_raw_fd();
                 let w: RawFd = write_end.into_raw_fd();
 

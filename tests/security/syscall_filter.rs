@@ -316,3 +316,68 @@ fn test_blocked_syscall_kills_with_sigsys() {
         "SIGSYS exit code should be 128+31=159"
     );
 }
+
+/// Complement of [`test_blocked_syscall_kills_with_sigsys`]: a denied syscall whose
+/// action is `Errno(EPERM)` must return `errno` to the caller (the command fails with a
+/// non-zero exit, no signal), not kill the process. `mkdir`/`mkdirat` are not in the
+/// Standard allowlist, so absent an explicit rule they would hit Standard's default
+/// `KillProcess` action; the explicit `Errno(EPERM)` rules supply a jump-table match that
+/// wins over that default.
+#[test]
+fn test_blocked_syscall_returns_eperm() {
+    use libsandbox::seccomp::SeccompFilterBuilder;
+    use tempfile::tempdir;
+
+    // EPERM = 1. `mkdir`/`mkdirat` are the two distinct syscall numbers a shell may issue;
+    // covering both keeps the test robust to which one the libc path takes.
+    let filter = SeccompFilterBuilder::standard()
+        .deny_with_errno("mkdir", 1)
+        .unwrap()
+        .deny_with_errno("mkdirat", 1)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .tmpfs("/tmp", 64 * MB)
+                .build()
+                .unwrap(),
+        )
+        .security(
+            SecurityConfig::builder()
+                .seccomp_profile(SeccompProfile::Custom(filter))
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+
+    // A temp parent guaranteed to exist and be writable; the denied mkdir targets a fresh
+    // subdir so a successful mkdir would create it (and we assert it does not).
+    let parent = tempdir().unwrap();
+    let target = parent.path().join("denied");
+    let result = sandbox
+        .run("sh", &["-c", &format!("mkdir '{}'", target.display())])
+        .unwrap();
+
+    assert!(
+        !result.success(),
+        "mkdir unexpectedly succeeded under Errno(EPERM); exit_code={}, stderr={}",
+        result.exit_code,
+        result.stderr
+    );
+    // EPERM returns the errno to the caller — the process is NOT killed, so no signal.
+    // This is the discriminating assertion vs. the KILL_PROCESS path above.
+    assert!(
+        result.signal.is_none(),
+        "Errno(EPERM) should not deliver a signal, got signal={:?}",
+        result.signal
+    );
+    assert!(
+        !target.exists(),
+        "the denied mkdir nonetheless created the directory"
+    );
+}
