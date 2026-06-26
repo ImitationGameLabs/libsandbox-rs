@@ -6,6 +6,7 @@ license = "MIT"
 description = "Linux-first sandbox runtime for interactive agent sessions"
 keywords = ["sandbox", "linux", "agent", "security"]
 categories = ["os::linux-apis", "development-tools"]
+rust-version = "1.78"
 autobenches = false
 
 [features]
