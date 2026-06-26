@@ -93,7 +93,6 @@ Tests require the kernel prerequisites listed above.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) -- internal design and implementation details
-- [Benchmarks](docs/BENCHMARKS.md) -- performance data and comparisons
 
 ## Attribution
 
