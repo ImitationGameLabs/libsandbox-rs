@@ -103,7 +103,10 @@ pub enum ProcfsMode {
 pub enum RootfsMode {
     /// `pivot_root` into the rootfs (the default). `old_root` customizes where
     /// the old root is pivoted out to (default `$rootfs/old_root`).
-    Pivot { old_root: Option<PathBuf> },
+    Pivot {
+        /// Where to pivot the old root to (defaults to `$rootfs/old_root`).
+        old_root: Option<PathBuf>,
+    },
     /// `chroot` into the rootfs without pivoting. Simpler, but the old root
     /// remains reachable inside the namespace via file descriptors opened
     /// before `chroot`.
@@ -134,17 +137,24 @@ pub enum Permission {
 /// Mount configuration.
 #[derive(Clone, Debug)]
 pub struct Mount {
+    /// Host path to mount from.
     pub source: PathBuf,
+    /// Path inside the sandbox to mount at.
     pub target: PathBuf,
+    /// Mount permission / flags.
     pub permission: Permission,
 }
 
 /// Filesystem configuration produced by [`FilesystemBuilder`].
 #[derive(Clone, Debug)]
 pub struct FilesystemConfig {
+    /// Bind mounts to establish inside the sandbox.
     pub mounts: Vec<Mount>,
+    /// Tmpfs mounts as `(target, size_bytes)`.
     pub tmpfs_mounts: Vec<(PathBuf, u64)>,
+    /// Working directory inside the sandbox.
     pub working_dir: PathBuf,
+    /// Optional custom root filesystem.
     pub rootfs: Option<PathBuf>,
     /// How `/proc` is handled. Defaults to [`ProcfsMode::Remount`].
     pub procfs: ProcfsMode,

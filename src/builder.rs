@@ -16,11 +16,17 @@ use crate::sandbox::Sandbox;
 /// executor at spawn time. Users do not construct this directly.
 #[derive(Clone, Debug, Default)]
 pub struct SandboxConfig {
+    /// Filesystem (mounts, rootfs, working dir, procfs) configuration.
     pub filesystem: FilesystemConfig,
+    /// Resource-limit (cgroup + rlimit) configuration.
     pub resources: ResourceConfig,
+    /// Network-isolation configuration.
     pub network: NetworkConfig,
+    /// Security (seccomp, identity) configuration.
     pub security: SecurityConfig,
+    /// Environment-variable / hostname configuration.
     pub environment: EnvironmentConfig,
+    /// Namespace-unshare configuration.
     pub namespace: NamespaceConfig,
 }
 

@@ -14,12 +14,16 @@ pub enum NetworkMode {
     /// Without the feature this variant cannot be constructed, so requesting
     /// proxied networking on a tokio-less build is rejected at compile time.
     #[cfg(feature = "tokio")]
-    Proxied { allowed_domains: Vec<String> },
+    Proxied {
+        /// Domains the child is allowed to reach (exact or wildcard).
+        allowed_domains: Vec<String>,
+    },
 }
 
 /// Network configuration produced by [`NetworkBuilder`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NetworkConfig {
+    /// Network access mode.
     pub mode: NetworkMode,
 }
 

@@ -36,8 +36,11 @@ impl PartialEq for SeccompProfile {
 /// Security configuration produced by [`SecurityBuilder`].
 #[derive(Clone, Debug, Default)]
 pub struct SecurityConfig {
+    /// The seccomp profile to install in the child.
     pub seccomp_profile: SeccompProfile,
+    /// Mapped UID inside the user namespace (`None` -> inherit / default mapping).
     pub uid: Option<u32>,
+    /// Mapped GID inside the user namespace (`None` -> inherit / default mapping).
     pub gid: Option<u32>,
 }
 

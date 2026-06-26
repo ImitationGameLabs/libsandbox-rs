@@ -39,46 +39,74 @@ pub struct ExecutionResult {
 /// Detailed execution report including diagnostics.
 #[derive(Debug, Clone)]
 pub struct ExecutionReport {
+    /// The execution result (stdout/stderr/exit/...).
     pub result: ExecutionResult,
+    /// Limit-enforcement and metric-collection diagnostics.
     pub diagnostics: ExecutionDiagnostics,
 }
 
 /// Structured execution diagnostics.
 #[derive(Debug, Clone)]
 pub struct ExecutionDiagnostics {
+    /// Per-controller limit-enforcement status.
     pub limits: LimitDiagnostics,
+    /// Per-metric collection status.
     pub metrics: MetricDiagnostics,
 }
 
 /// Status for limit enforcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LimitStatus {
+    /// No limit of this kind was requested.
     NotRequested,
+    /// The limit was requested and is being enforced.
     Enforced,
-    NotEnforced { reason: String },
-    Unknown { reason: String },
+    /// The limit was requested but could not be enforced.
+    NotEnforced {
+        /// Why the limit could not be enforced.
+        reason: String,
+    },
+    /// It is unknown whether the limit is being enforced.
+    Unknown {
+        /// Why enforcement status is unknown.
+        reason: String,
+    },
 }
 
 /// Status for metric collection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetricStatus {
+    /// The metric was collected.
     Collected,
-    Unavailable { reason: String },
-    Unknown { reason: String },
+    /// The metric could not be collected.
+    Unavailable {
+        /// Why the metric could not be collected.
+        reason: String,
+    },
+    /// It is unknown whether the metric was collected.
+    Unknown {
+        /// Why collection status is unknown.
+        reason: String,
+    },
 }
 
 /// Diagnostics for limit enforcement.
 #[derive(Debug, Clone)]
 pub struct LimitDiagnostics {
+    /// Memory-limit enforcement status.
     pub memory: LimitStatus,
+    /// CPU-limit enforcement status.
     pub cpu: LimitStatus,
+    /// Pids-limit enforcement status.
     pub pids: LimitStatus,
 }
 
 /// Diagnostics for metric availability.
 #[derive(Debug, Clone)]
 pub struct MetricDiagnostics {
+    /// Peak-memory metric status.
     pub peak_memory: MetricStatus,
+    /// CPU-time metric status.
     pub cpu_time: MetricStatus,
 }
 
@@ -123,6 +151,7 @@ impl ExecutionResult {
 }
 
 impl ExecutionReport {
+    /// Build a report from an execution policy and result, deriving diagnostics.
     pub fn from_result(policy: &ExecutionPolicy, result: ExecutionResult) -> Self {
         let diagnostics = ExecutionDiagnostics::from_result(policy, &result);
         Self {
@@ -133,6 +162,7 @@ impl ExecutionReport {
 }
 
 impl ExecutionDiagnostics {
+    /// Derive limit/metric diagnostics from a policy and result.
     pub fn from_result(policy: &ExecutionPolicy, result: &ExecutionResult) -> Self {
         let unknown_limit_reason =
             "Detailed limit enforcement status is not reported on this platform".to_string();
@@ -182,6 +212,8 @@ impl ExecutionDiagnostics {
         }
     }
 
+    /// A human-readable summary of any unenforced limits or unavailable metrics,
+    /// or `None` if everything is healthy. Used to surface `BestEffort` degradation.
     pub fn degradation_summary(&self) -> Option<String> {
         let mut items = Vec::new();
 

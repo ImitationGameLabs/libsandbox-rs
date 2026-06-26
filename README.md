@@ -65,25 +65,13 @@ let status = child.wait()?;
 println!("exit: {}", status.code());
 ```
 
-### Presets
-
-```rust
-// Online judge: strict limits, no network
-let sandbox = Sandbox::code_judge("/submissions/123").build()?;
-
-// AI agent: moderate limits, optional network
-let sandbox = Sandbox::agent_executor("/workspace")
-    .network(NetworkConfig::proxied(&["api.openai.com"]))
-    .build()?;
-```
-
 ## Feature Highlights
 
 - **Rootless operation** -- user namespace UID/GID mapping + cgroup v2 delegation
+- **Composable domain configs** -- filesystem / resources / network / security / environment / namespace builders
 - **Caller-provided stdio** -- `Stdio` enum supports pipes, inheritance, null, and owned FDs (e.g., PTY slave)
 - **Dynamic mounts** -- add, remove, and remount in running sandboxes via `MountHandle`
 - **Execution diagnostics** -- `ExecutionReport` provides per-limit enforcement status and metric collection status
-- **Preset configurations** -- `code_judge`, `agent_executor`, `data_analysis`, `interactive`
 
 ## Requirements
 
@@ -105,7 +93,6 @@ Tests require the kernel prerequisites listed above.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) -- internal design and implementation details
-- [API Reference](docs/API.md) -- complete API documentation
 - [Benchmarks](docs/BENCHMARKS.md) -- performance data and comparisons
 
 ## Attribution

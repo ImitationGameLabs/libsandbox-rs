@@ -5,8 +5,11 @@ use std::collections::HashMap;
 /// Environment configuration produced by [`EnvironmentBuilder`].
 #[derive(Clone, Debug)]
 pub struct EnvironmentConfig {
+    /// Environment variables to set in the child (`KEY` -> `VALUE`).
     pub env: HashMap<String, String>,
+    /// Whether to clear inherited environment variables (default `true`).
     pub clear_env: bool,
+    /// Hostname inside the sandbox (UTS namespace).
     pub hostname: String,
 }
 

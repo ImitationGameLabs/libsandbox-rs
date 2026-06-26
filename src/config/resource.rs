@@ -27,7 +27,9 @@ pub struct CgroupLimitRequests {
 /// Execution policy derived from resource configuration.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExecutionPolicy {
+    /// How strictly cgroup-backed limits are enforced when unavailable.
     pub resource_enforcement: ResourceEnforcement,
+    /// Which cgroup-backed limits were explicitly requested by the caller.
     pub cgroup_limit_requests: CgroupLimitRequests,
 }
 
@@ -43,14 +45,21 @@ pub struct ExecutionPolicy {
 #[derive(Clone, Debug)]
 pub struct ResourceConfig {
     // Cgroup-backed limits
+    /// Memory limit in bytes (cgroup `memory.max`).
     pub memory_limit: Option<u64>,
+    /// CPU limit in cores, 0.0..N (cgroup `cpu.max`).
     pub cpu_limit: Option<f64>,
+    /// Maximum number of processes/threads (cgroup `pids.max`).
     pub max_pids: Option<u32>,
 
     // RLIMIT-backed limits
+    /// Wall-clock time limit (the process is killed after this duration).
     pub wall_time_limit: Option<Duration>,
+    /// CPU time limit (`RLIMIT_CPU`).
     pub cpu_time_limit: Option<Duration>,
+    /// Maximum file size in bytes (`RLIMIT_FSIZE`).
     pub max_file_size: Option<u64>,
+    /// Maximum number of open file descriptors (`RLIMIT_NOFILE`).
     pub max_open_files: Option<u32>,
 
     // Enforcement metadata (set by the builder, not directly by users)

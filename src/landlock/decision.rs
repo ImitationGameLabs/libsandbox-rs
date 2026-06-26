@@ -44,7 +44,10 @@ pub enum ReadPolicy {
     /// and secrets — is denied by default (landlock's `handle_access(full)` is
     /// deny-default, so anything not listed is unreadable). `paths` must include enough
     /// for the program/libs to run (e.g. `/usr`, `/bin`, `/lib`) plus the workspace.
-    Narrow { paths: Vec<PathBuf> },
+    Narrow {
+        /// Paths granted read access (the read allowlist).
+        paths: Vec<PathBuf>,
+    },
 }
 
 /// Per-spawn access decision consumed by [`super::prepare_landlock`].

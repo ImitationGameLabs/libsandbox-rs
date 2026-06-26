@@ -187,9 +187,11 @@ pub struct ChildPayload {
     pub parent_ready_write_fd: RawFd,
     /// Parent's error-pipe read end (child must close its inherited copy).
     pub parent_error_read_fd: RawFd,
-    /// Parent-end stdio fds the child must close so pipes see EOF.
+    /// Parent-end stdin fd the child must close so the pipe sees EOF.
     pub stdin_close_in_child: Option<RawFd>,
+    /// Parent-end stdout fd the child must close so the pipe sees EOF.
     pub stdout_close_in_child: Option<RawFd>,
+    /// Parent-end stderr fd the child must close so the pipe sees EOF.
     pub stderr_close_in_child: Option<RawFd>,
     /// Child-side stdio fds to `dup2` onto 0/1/2 (`None` = leave inherited).
     pub stdio_fds: [Option<RawFd>; 3],

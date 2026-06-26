@@ -16,12 +16,16 @@ pub(super) const NANOBOX_DIR: &str = "libsandbox";
 /// Cgroup controllers used for resource limiting
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CgroupController {
+    /// The memory controller (`memory.current` / `memory.max`).
     Memory,
+    /// The CPU controller (`cpu.max`).
     Cpu,
+    /// The pids controller (`pids.max`).
     Pids,
 }
 
 impl CgroupController {
+    /// Lowercase cgroup name of this controller (`"memory"` / `"cpu"` / `"pids"`).
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Memory => "memory",

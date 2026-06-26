@@ -52,6 +52,10 @@
 //! available; inspect `Sandbox::run_detailed()` diagnostics for degraded
 //! non-memory limits.
 
+// API documentation is `cargo doc` -- every public item must be documented so the
+// rendered reference stays complete. This denies the build on a missing doc-comment.
+#![deny(missing_docs)]
+
 pub mod builder;
 pub mod cgroup;
 pub mod config;

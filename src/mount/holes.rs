@@ -31,7 +31,7 @@ use std::path::PathBuf;
 /// Parent-side-prepared mount-hole setup: hole paths as `CString`s plus the uid/gid map
 /// strings, ready for [`install_mount_holes`] with no allocation left for the child.
 ///
-/// Mirrors [`crate::landlock::PreparedLandlock`] / the prepare→install split. Built by
+/// Mirrors the landlock `PreparedLandlock` / the prepare->install split. Built by
 /// [`prepare_mount_holes`]; the child consumes it via [`install_mount_holes`].
 #[derive(Debug)]
 pub struct PreparedMountHoles {

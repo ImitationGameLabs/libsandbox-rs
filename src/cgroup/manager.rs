@@ -16,23 +16,31 @@ use super::{CgroupController, CgroupFile, CGROUP_ROOT, NANOBOX_DIR};
 /// Memory statistics from cgroup
 #[derive(Debug, Clone)]
 pub struct MemoryStats {
+    /// Current memory usage in bytes (`memory.current`).
     pub current: u64,
+    /// Peak memory usage in bytes (`memory.peak`), if available.
     pub peak: u64,
 }
 
 /// CPU statistics from cgroup
 #[derive(Debug, Clone)]
 pub struct CpuStats {
+    /// Total CPU usage in microseconds (`cpu.stat usage_usec`).
     pub total_usec: u64,
+    /// User-mode CPU time in microseconds (`cpu.stat user_usec`).
     pub user_usec: u64,
+    /// Kernel-mode CPU time in microseconds (`cpu.stat system_usec`).
     pub system_usec: u64,
 }
 
 /// Memory events from cgroup (for OOM detection)
 #[derive(Debug, Clone, Default)]
 pub struct MemoryEvents {
+    /// Number of OOM events (`memory.events oom`).
     pub oom: u64,
+    /// Number of OOM kill events (`memory.events oom_kill`).
     pub oom_kill: u64,
+    /// Number of OOM group-kill events (`memory.events oom_group_kill`).
     pub oom_group_kill: u64,
 }
 
@@ -46,20 +54,27 @@ pub struct CgroupManager {
 /// Snapshot of cgroup support for the current process.
 #[derive(Debug, Clone)]
 pub struct CgroupSupport {
+    /// Whether a cgroup v2 hierarchy is mounted.
     pub mounted: bool,
+    /// Whether the process can access (read/write) the cgroup hierarchy.
     pub accessible: bool,
+    /// Controllers available on the cgroup that limits can be written to.
     pub available_controllers: Vec<CgroupController>,
 }
 
 impl CgroupSupport {
+    /// Whether the given controller is available.
     pub fn controller_available(&self, controller: CgroupController) -> bool {
         self.available_controllers.contains(&controller)
     }
 
+    /// Whether a limit on the given controller can actually be enforced
+    /// (hierarchy mounted and accessible, controller available).
     pub fn can_enforce(&self, controller: CgroupController) -> bool {
         self.mounted && self.accessible && self.controller_available(controller)
     }
 
+    /// Comma-separated names of the available controllers (for diagnostics).
     pub fn available_controllers_string(&self) -> String {
         self.available_controllers
             .iter()
@@ -68,6 +83,8 @@ impl CgroupSupport {
             .join(", ")
     }
 
+    /// Human-readable reason why a controller (or cgroups in general, if
+    /// `controller` is `None`) cannot be enforced.
     pub fn unavailable_reason(&self, controller: Option<CgroupController>) -> String {
         if !self.mounted {
             return "cgroups v2 not available. Resource limits require cgroup v2".into();
