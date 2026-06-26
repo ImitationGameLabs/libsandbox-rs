@@ -353,23 +353,20 @@ mod tests {
 
     #[test]
     fn test_seccomp_profile_custom_equality() {
-        use crate::seccomp::{SeccompAction, SeccompFilterBuilder};
+        use crate::seccomp::{SYS_mount, SYS_ptrace, SeccompAction, SeccompFilterBuilder};
 
         let a = SeccompFilterBuilder::new(SeccompAction::Allow)
-            .deny("ptrace")
-            .unwrap()
+            .deny(SYS_ptrace)
             .build()
             .unwrap();
         let b = SeccompFilterBuilder::new(SeccompAction::Allow)
-            .deny("ptrace")
-            .unwrap()
+            .deny(SYS_ptrace)
             .build()
             .unwrap();
         assert_eq!(SeccompProfile::Custom(a), SeccompProfile::Custom(b));
 
         let c = SeccompFilterBuilder::new(SeccompAction::Allow)
-            .deny("mount")
-            .unwrap()
+            .deny(SYS_mount)
             .build()
             .unwrap();
         assert_ne!(SeccompProfile::Custom(c), SeccompProfile::Standard);
@@ -377,14 +374,13 @@ mod tests {
 
     #[test]
     fn test_seccomp_filter_inequality() {
-        use crate::seccomp::{SeccompAction, SeccompFilterBuilder};
+        use crate::seccomp::{SYS_ptrace, SeccompAction, SeccompFilterBuilder};
 
         let a = SeccompFilterBuilder::new(SeccompAction::Allow)
             .build()
             .unwrap();
         let b = SeccompFilterBuilder::new(SeccompAction::Allow)
-            .deny("ptrace")
-            .unwrap()
+            .deny(SYS_ptrace)
             .build()
             .unwrap();
         assert_ne!(a, b);

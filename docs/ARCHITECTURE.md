@@ -121,8 +121,8 @@ The `CgroupLimitRequests` struct tracks which controllers are actually needed ba
 
 libsandbox compiles declarative syscall rules into classic BPF (cBPF) programs loaded via the `seccomp(2)` syscall. The pipeline is:
 
-1. **Build rules** -- `SeccompFilterBuilder` collects rules via methods like `allow(syscall)`, `deny(syscall)` (applies `KillProcess`), `deny_with_errno(syscall, errno)`, and `log(syscall)`. Internally, each rule pairs a syscall number with one of six actions (`Allow`, `KillProcess`, `KillThread`, `Trap`, `Errno(n)`, `Log`). The builder also supports `default_action(action)` to set the action for unmatched syscalls.
-2. **Compile to BPF** -- the builder produces a sorted jump table of BPF instructions. The program first validates the architecture (x86_64), then binary-searches the syscall number.
+1. **Build rules** -- `SeccompFilterBuilder` collects rules via methods like `allow(syscall)`, `deny(syscall)` (applies `KillProcess`), `deny_with_errno(syscall, errno)`, and `log(syscall)`. Each `syscall` is a `SyscallNumber` (`libc::SYS_*` constant, re-exported at `libsandbox::seccomp::SYS_*`); typos are compile errors. Internally, each rule pairs a syscall number with one of six actions (`Allow`, `KillProcess`, `KillThread`, `Trap`, `Errno(n)`, `Log`). The builder also supports `default_action(action)` to set the action for unmatched syscalls.
+2. **Compile to BPF** -- the builder produces a sorted jump table of BPF instructions. The program first validates the architecture (x86_64 or aarch64), then binary-searches the syscall number.
 3. **Load** -- `PR_SET_NO_NEW_PRIVS` is set first (prevents privilege escalation), then `seccomp(2)` installs the filter.
 
 ### Preset Profiles
@@ -138,7 +138,7 @@ Four preset profiles are provided via `SeccompProfile`:
 
 The `Custom(SeccompFilter)` variant accepts a manually constructed filter for fine-grained control.
 
-**Current status:** The BPF compilation pipeline is structurally complete and produces valid programs on x86_64. Enforcement effectiveness depends on the completeness of each preset's syscall list. See `src/seccomp/` for implementation details.
+**Current status:** The BPF compilation pipeline is structurally complete and produces valid programs on x86_64 and aarch64. Enforcement effectiveness depends on the completeness of each preset's syscall list. See `src/seccomp/` for implementation details.
 
 ## Network Isolation
 

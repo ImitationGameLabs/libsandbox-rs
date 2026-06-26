@@ -3,7 +3,7 @@
 #![cfg(target_os = "linux")]
 
 use libsandbox::config::{FilesystemConfig, ResourceConfig, SecurityConfig};
-use libsandbox::seccomp::SeccompFilterBuilder;
+use libsandbox::seccomp::{SYS_mount, SYS_ptrace, SYS_socket, SYS_write, SeccompFilterBuilder};
 use libsandbox::{Sandbox, SeccompProfile, MB};
 use std::time::Duration;
 
@@ -213,8 +213,7 @@ fn test_seccomp_with_python() {
 fn test_custom_filter_from_standard() {
     // Build a custom filter derived from Standard that denies socket syscalls.
     let filter = SeccompFilterBuilder::standard()
-        .deny("socket")
-        .unwrap()
+        .deny(SYS_socket)
         .build()
         .unwrap();
 
@@ -244,10 +243,8 @@ fn test_custom_filter_from_standard() {
 fn test_custom_denylist_filter() {
     // Build an allow-by-default filter that denies dangerous syscalls.
     let filter = SeccompFilterBuilder::new(libsandbox::seccomp::SeccompAction::Allow)
-        .deny("ptrace")
-        .unwrap()
-        .deny("mount")
-        .unwrap()
+        .deny(SYS_ptrace)
+        .deny(SYS_mount)
         .build()
         .unwrap();
 
@@ -282,8 +279,7 @@ fn test_blocked_syscall_kills_with_sigsys() {
     use libsandbox::seccomp::SeccompFilterBuilder;
 
     let filter = SeccompFilterBuilder::strict()
-        .deny("write")
-        .unwrap()
+        .deny(SYS_write)
         .build()
         .unwrap();
 
@@ -319,24 +315,24 @@ fn test_blocked_syscall_kills_with_sigsys() {
 
 /// Complement of [`test_blocked_syscall_kills_with_sigsys`]: a denied syscall whose
 /// action is `Errno(EPERM)` must return `errno` to the caller (the command fails with a
-/// non-zero exit, no signal), not kill the process. `mkdir`/`mkdirat` are not in the
-/// Standard allowlist, so absent an explicit rule they would hit Standard's default
-/// `KillProcess` action; the explicit `Errno(EPERM)` rules supply a jump-table match that
-/// wins over that default.
+/// non-zero exit, no signal), not kill the process. Neither `mkdir` nor `mkdirat` is in
+/// the Standard allowlist, so absent an explicit rule the issued syscall would hit
+/// Standard's default `KillProcess` action; the explicit `Errno(EPERM)` rule(s) supply a
+/// jump-table match that wins over that default.
 #[test]
 fn test_blocked_syscall_returns_eperm() {
-    use libsandbox::seccomp::SeccompFilterBuilder;
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    use libsandbox::seccomp::SYS_mkdir;
+    use libsandbox::seccomp::{SYS_mkdirat, SeccompFilterBuilder};
     use tempfile::tempdir;
 
-    // EPERM = 1. `mkdir`/`mkdirat` are the two distinct syscall numbers a shell may issue;
-    // covering both keeps the test robust to which one the libc path takes.
-    let filter = SeccompFilterBuilder::standard()
-        .deny_with_errno("mkdir", 1)
-        .unwrap()
-        .deny_with_errno("mkdirat", 1)
-        .unwrap()
-        .build()
-        .unwrap();
+    // EPERM = 1. A shell's `mkdir` issues whichever number its libc path takes:
+    // `mkdirat` everywhere, plus the legacy `mkdir` on x86/x86_64 — deny both so the
+    // command is blocked regardless of which syscall coreutils issues.
+    let filter = SeccompFilterBuilder::standard().deny_with_errno(SYS_mkdirat, 1);
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let filter = filter.deny_with_errno(SYS_mkdir, 1);
+    let filter = filter.build().unwrap();
 
     let sandbox = Sandbox::builder()
         .filesystem(

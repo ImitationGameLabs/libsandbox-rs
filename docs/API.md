@@ -720,16 +720,16 @@ EnvironmentConfig::builder()
 
 ## Seccomp Customization
 
-For fine-grained syscall filtering beyond the preset profiles, use `SeccompFilterBuilder` (accessible via `libsandbox::seccomp::SeccompFilterBuilder`):
+For fine-grained syscall filtering beyond the preset profiles, use `SeccompFilterBuilder` (accessible via `libsandbox::seccomp::SeccompFilterBuilder`). Syscalls are identified by `libc`'s own `SYS_*` number constants, re-exported at `libsandbox::seccomp::SYS_*` so you don't need to depend on `libc` yourself — typos are caught at compile time:
 
 ```rust
-use libsandbox::seccomp::SeccompFilterBuilder;
+use libsandbox::seccomp::{SeccompFilterBuilder, SYS_mount, SYS_ptrace, SYS_read};
 use libsandbox::SeccompProfile;
 
 let filter = SeccompFilterBuilder::standard()
-    .deny("ptrace")?                       // KillProcess (default deny action)
-    .deny_with_errno("mount", libc::EPERM)? // Return EPERM instead
-    .allow("read")?
+    .deny(SYS_ptrace)                        // KillProcess (default deny action)
+    .deny_with_errno(SYS_mount, 1)           // Return EPERM (1) instead
+    .allow(SYS_read)
     .build()?;
 
 let sandbox = Sandbox::builder()
@@ -750,14 +750,16 @@ let sandbox = Sandbox::builder()
 | `standard()`                      | `Self`                  | Start with the Standard preset                              |
 | `permissive()`                    | `Self`                  | Start with the Permissive preset                            |
 | `default_action(action)`          | `Self`                  | Change the default action for unmatched syscalls            |
-| `allow(syscall)`                  | `Result<Self>`          | Allow a syscall                                             |
-| `deny(syscall)`                   | `Result<Self>`          | Deny a syscall with KillProcess                             |
-| `deny_with_errno(syscall, errno)` | `Result<Self>`          | Deny a syscall, return the given errno                      |
-| `log(syscall)`                    | `Result<Self>`          | Allow a syscall but log it                                  |
-| `allow_all(syscalls)`             | `Result<Self>`          | Add Allow rules for each syscall in the slice               |
-| `deny_all(syscalls)`              | `Result<Self>`          | Add KillProcess rules for each syscall in the slice         |
-| `remove(syscall)`                 | `Result<Self>`          | Remove the rule for a syscall                               |
+| `allow(syscall)`                  | `Self`                  | Allow a syscall                                             |
+| `deny(syscall)`                   | `Self`                  | Deny a syscall with KillProcess                             |
+| `deny_with_errno(syscall, errno)` | `Self`                  | Deny a syscall, return the given errno                      |
+| `log(syscall)`                    | `Self`                  | Allow a syscall but log it                                  |
+| `allow_all(syscalls)`             | `Self`                  | Add Allow rules for each syscall in the slice               |
+| `deny_all(syscalls)`              | `Self`                  | Add KillProcess rules for each syscall in the slice         |
+| `remove(syscall)`                 | `Self`                  | Remove the rule for a syscall                               |
 | `build()`                         | `Result<SeccompFilter>` | Compile into a `SeccompFilter`                              |
+
+The `syscall`/`syscalls` arguments are `SyscallNumber` (= `libc::c_long`); pass the re-exported `SYS_*` constants.
 
 ### SeccompFilter
 
@@ -782,7 +784,7 @@ pub enum SeccompAction {
 }
 ```
 
-**Note:** Seccomp BPF compilation currently supports x86_64 only.
+**Note:** Seccomp BPF compilation supports x86_64 and aarch64.
 
 ---
 

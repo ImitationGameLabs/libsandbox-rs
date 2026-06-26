@@ -9,21 +9,24 @@ use super::presets::{
     PERMISSIVE_EXTRA_SYSCALLS, PERMISSIVE_EXTRA_SYSCALLS_X86_ONLY, STANDARD_SYSCALLS,
     STANDARD_SYSCALLS_X86_ONLY, STRICT_SYSCALLS, STRICT_SYSCALLS_X86_ONLY,
 };
-use super::syscalls::syscall_number;
+use super::syscalls::SyscallNumber;
 use super::{Rule, SeccompAction};
 
 /// Builder for constructing seccomp-BPF filters.
 ///
 /// Rules are accumulated in insertion order and compiled into a sorted BPF
-/// jump table by [`build`](SeccompFilterBuilder::build).
+/// jump table by [`build`](SeccompFilterBuilder::build). Syscalls are
+/// identified by [`SyscallNumber`] (a transparent alias for `libc::c_long`); pass the
+/// re-exported `SYS_*` constants from [`crate::seccomp`](super) — typos are
+/// compile errors.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use libsandbox::seccomp::{SeccompAction, SeccompFilterBuilder};
+/// use libsandbox::seccomp::{SeccompAction, SeccompFilterBuilder, SYS_socket};
 ///
 /// let filter = SeccompFilterBuilder::standard()
-///     .deny("socket")?
+///     .deny(SYS_socket)
 ///     .build()?;
 /// # Ok::<(), libsandbox::SandboxError>(())
 /// ```
@@ -52,7 +55,7 @@ impl SeccompFilterBuilder {
     /// and file descriptor operations. This includes `TIOCSTI`, which can
     /// push characters into a shared terminal's input buffer. If the sandboxed
     /// process shares a terminal with the host, consider removing `ioctl` with
-    /// `.remove("ioctl")` after constructing this preset.
+    /// `.remove(SYS_ioctl)` after constructing this preset.
     pub fn strict() -> Self {
         Self {
             default_action: SeccompAction::KillProcess,
@@ -60,9 +63,8 @@ impl SeccompFilterBuilder {
                 .iter()
                 .chain(STRICT_SYSCALLS_X86_ONLY.iter())
                 .chain(LANDLOCK_CHILD_SYSCALLS.iter())
-                .map(|&name| Rule {
-                    syscall_nr: syscall_number(name)
-                        .unwrap_or_else(|_| panic!("strict preset: unknown syscall '{name}'")),
+                .map(|&nr| Rule {
+                    syscall_nr: nr as i32,
                     action: SeccompAction::Allow.to_bpf_ret(),
                 })
                 .collect(),
@@ -78,9 +80,8 @@ impl SeccompFilterBuilder {
                 .iter()
                 .chain(STANDARD_SYSCALLS_X86_ONLY.iter())
                 .chain(LANDLOCK_CHILD_SYSCALLS.iter())
-                .map(|&name| Rule {
-                    syscall_nr: syscall_number(name)
-                        .unwrap_or_else(|_| panic!("standard preset: unknown syscall '{name}'")),
+                .map(|&nr| Rule {
+                    syscall_nr: nr as i32,
                     action: SeccompAction::Allow.to_bpf_ret(),
                 })
                 .collect(),
@@ -96,21 +97,19 @@ impl SeccompFilterBuilder {
         let mut rules: Vec<Rule> = STANDARD_SYSCALLS
             .iter()
             .chain(STANDARD_SYSCALLS_X86_ONLY.iter())
-            .map(|&name| Rule {
-                syscall_nr: syscall_number(name)
-                    .unwrap_or_else(|_| panic!("permissive preset: unknown syscall '{name}'")),
+            .map(|&nr| Rule {
+                syscall_nr: nr as i32,
                 action: SeccompAction::Allow.to_bpf_ret(),
             })
             .collect();
 
         // Add permissive-only extras
-        for &name in PERMISSIVE_EXTRA_SYSCALLS
+        for &nr in PERMISSIVE_EXTRA_SYSCALLS
             .iter()
             .chain(PERMISSIVE_EXTRA_SYSCALLS_X86_ONLY.iter())
         {
             rules.push(Rule {
-                syscall_nr: syscall_number(name)
-                    .unwrap_or_else(|_| panic!("permissive preset: unknown syscall '{name}'")),
+                syscall_nr: nr as i32,
                 action: SeccompAction::Allow.to_bpf_ret(),
             });
         }
@@ -118,10 +117,12 @@ impl SeccompFilterBuilder {
         // Deny dangerous syscalls (these take precedence because we sort by
         // syscall number and deduplicate, keeping the *last* entry for a given
         // number — we append denies *after* allows so they win).
-        for &name in BLOCKED_SYSCALLS.iter().chain(BLOCKED_SYSCALLS_X86_ONLY.iter()) {
+        for &nr in BLOCKED_SYSCALLS
+            .iter()
+            .chain(BLOCKED_SYSCALLS_X86_ONLY.iter())
+        {
             rules.push(Rule {
-                syscall_nr: syscall_number(name)
-                    .unwrap_or_else(|_| panic!("permissive preset: unknown syscall '{name}'")),
+                syscall_nr: nr as i32,
                 action: SeccompAction::KillProcess.to_bpf_ret(),
             });
         }
@@ -140,49 +141,49 @@ impl SeccompFilterBuilder {
         self
     }
 
-    /// Add an Allow rule for the named syscall.
-    pub fn allow(self, syscall: &str) -> Result<Self> {
+    /// Add an Allow rule for the given syscall.
+    pub fn allow(self, syscall: SyscallNumber) -> Self {
         self.add_rule(syscall, SeccompAction::Allow)
     }
 
-    /// Add a KillProcess rule for the named syscall.
-    pub fn deny(self, syscall: &str) -> Result<Self> {
+    /// Add a KillProcess rule for the given syscall.
+    pub fn deny(self, syscall: SyscallNumber) -> Self {
         self.add_rule(syscall, SeccompAction::KillProcess)
     }
 
-    /// Add an Errno rule for the named syscall.
-    pub fn deny_with_errno(self, syscall: &str, errno: u16) -> Result<Self> {
+    /// Add an Errno rule for the given syscall.
+    pub fn deny_with_errno(self, syscall: SyscallNumber, errno: u16) -> Self {
         self.add_rule(syscall, SeccompAction::Errno(errno))
     }
 
-    /// Add a Log rule for the named syscall (allow + audit logging).
-    pub fn log(self, syscall: &str) -> Result<Self> {
+    /// Add a Log rule for the given syscall (allow + audit logging).
+    pub fn log(self, syscall: SyscallNumber) -> Self {
         self.add_rule(syscall, SeccompAction::Log)
     }
 
     /// Add Allow rules for multiple syscalls.
-    pub fn allow_all(self, syscalls: &[&str]) -> Result<Self> {
+    pub fn allow_all(self, syscalls: &[SyscallNumber]) -> Self {
         let mut builder = self;
-        for &name in syscalls {
-            builder = builder.allow(name)?;
+        for &nr in syscalls {
+            builder = builder.allow(nr);
         }
-        Ok(builder)
+        builder
     }
 
     /// Add KillProcess rules for multiple syscalls.
-    pub fn deny_all(self, syscalls: &[&str]) -> Result<Self> {
+    pub fn deny_all(self, syscalls: &[SyscallNumber]) -> Self {
         let mut builder = self;
-        for &name in syscalls {
-            builder = builder.deny(name)?;
+        for &nr in syscalls {
+            builder = builder.deny(nr);
         }
-        Ok(builder)
+        builder
     }
 
-    /// Remove all rules for the named syscall.
-    pub fn remove(mut self, syscall: &str) -> Result<Self> {
-        let nr = syscall_number(syscall)?;
+    /// Remove all rules targeting the given syscall.
+    pub fn remove(mut self, syscall: SyscallNumber) -> Self {
+        let nr = syscall as i32;
         self.rules.retain(|r| r.syscall_nr != nr);
-        Ok(self)
+        self
     }
 
     // --- Compile ---
@@ -198,8 +199,8 @@ impl SeccompFilterBuilder {
         let sorted = dedup_rules(&self.rules);
 
         // Validate: exit and exit_group must be callable
-        let exit_nr = syscall_number("exit")?;
-        let exit_group_nr = syscall_number("exit_group")?;
+        let exit_nr = super::syscalls::SYS_exit as i32;
+        let exit_group_nr = super::syscalls::SYS_exit_group as i32;
 
         let allow_ret = SeccompAction::Allow.to_bpf_ret();
         let log_ret = SeccompAction::Log.to_bpf_ret();
@@ -264,13 +265,13 @@ impl SeccompFilterBuilder {
 
     // --- Internal helpers ---
 
-    fn add_rule(mut self, syscall: &str, action: SeccompAction) -> Result<Self> {
-        let nr = syscall_number(syscall)?;
+    fn add_rule(mut self, syscall: SyscallNumber, action: SeccompAction) -> Self {
+        let nr = syscall as i32;
         self.rules.push(Rule {
             syscall_nr: nr,
             action: action.to_bpf_ret(),
         });
-        Ok(self)
+        self
     }
 }
 

@@ -12,18 +12,21 @@ mod bpf;
 mod builder;
 mod filter;
 mod presets;
-mod syscalls;
+pub mod syscalls;
 
 pub use builder::SeccompFilterBuilder;
 pub use filter::SeccompFilter;
+// Re-export the SyscallNumber alias and the curated SYS_* constants at the
+// module root so callers write `libsandbox::seccomp::SYS_socket` directly.
+// `syscalls` holds only `SyscallNumber` and the `SYS_*` re-exports, so the glob
+// is tightly scoped; if it grows non-syscall items, switch to an explicit list.
+pub use syscalls::*;
 
 // Test-only re-exports for the integrated test module below.
 #[cfg(test)]
 use bpf::compile_bpf;
 #[cfg(test)]
 use bpf::AUDIT_ARCH;
-#[cfg(test)]
-use syscalls::syscall_number;
 
 // ---------------------------------------------------------------------------
 // FFI types — libc already provides sock_filter / sock_fprog, but we use them
@@ -107,10 +110,8 @@ mod tests {
     #[test]
     fn test_custom_filter() {
         let filter = SeccompFilterBuilder::new(SeccompAction::Allow)
-            .deny("ptrace")
-            .unwrap()
-            .deny("mount")
-            .unwrap()
+            .deny(SYS_ptrace)
+            .deny(SYS_mount)
             .build()
             .unwrap();
         assert!(filter.rule_count >= 2);
@@ -119,8 +120,7 @@ mod tests {
     #[test]
     fn test_deny_from_standard() {
         let filter = SeccompFilterBuilder::standard()
-            .deny("socket")
-            .unwrap()
+            .deny(SYS_socket)
             .build()
             .unwrap();
         // Standard has ~80+ rules plus the deny override
@@ -130,18 +130,11 @@ mod tests {
     #[test]
     fn test_remove_rule() {
         let filter = SeccompFilterBuilder::standard()
-            .remove("socket")
-            .unwrap()
+            .remove(SYS_socket)
             .build()
             .unwrap();
         // One less than standard
         assert!(filter.rule_count > 70);
-    }
-
-    #[test]
-    fn test_unknown_syscall_rejected() {
-        let result = SeccompFilterBuilder::new(SeccompAction::Allow).allow("nonexistent_syscall");
-        assert!(result.is_err());
     }
 
     #[test]
@@ -245,12 +238,11 @@ mod tests {
     fn test_deny_overrides_allow_in_standard() {
         // Standard allows socket; deny should override to KillProcess.
         let filter = SeccompFilterBuilder::standard()
-            .deny("socket")
-            .unwrap()
+            .deny(SYS_socket)
             .build()
             .unwrap();
 
-        let socket_nr = syscall_number("socket").unwrap() as u32;
+        let socket_nr = libc::SYS_socket as u32;
         let ret_k = find_ret_action_for_syscall(&filter.program, socket_nr, "socket");
         assert_eq!(
             ret_k,
@@ -282,32 +274,25 @@ mod tests {
 
     #[test]
     fn test_post_dedup_exit_validation_allows_override() {
-        // .deny("exit").allow("exit") on KillProcess default:
+        // .deny(SYS_exit).allow(SYS_exit) on KillProcess default:
         // after dedup, Allow wins (last-wins). Should compile.
         let filter = SeccompFilterBuilder::new(SeccompAction::KillProcess)
-            .allow("read")
-            .unwrap()
-            .deny("exit")
-            .unwrap()
-            .allow("exit")
-            .unwrap()
-            .deny("exit_group")
-            .unwrap()
-            .allow("exit_group")
-            .unwrap()
+            .allow(SYS_read)
+            .deny(SYS_exit)
+            .allow(SYS_exit)
+            .deny(SYS_exit_group)
+            .allow(SYS_exit_group)
             .build();
         assert!(filter.is_ok(), "last-wins should allow exit override");
     }
 
     #[test]
     fn test_post_dedup_exit_validation_rejects_final_deny() {
-        // .allow("exit").deny("exit") on KillProcess default:
+        // .allow(SYS_exit).deny(SYS_exit) on KillProcess default:
         // after dedup, KillProcess (deny) wins. Should fail.
         let result = SeccompFilterBuilder::new(SeccompAction::KillProcess)
-            .allow("exit")
-            .unwrap()
-            .deny("exit")
-            .unwrap()
+            .allow(SYS_exit)
+            .deny(SYS_exit)
             .build();
         assert!(result.is_err(), "last-wins deny should block exit");
     }
@@ -396,12 +381,11 @@ mod tests {
     fn test_deny_with_errno_compiles_bpf_errno_action() {
         // deny_with_errno should produce a BPF_RET with SECCOMP_RET_ERRNO | errno.
         let filter = SeccompFilterBuilder::new(SeccompAction::Allow)
-            .deny_with_errno("ptrace", 13)
-            .unwrap()
+            .deny_with_errno(SYS_ptrace, 13)
             .build()
             .unwrap();
 
-        let ptrace_nr = syscall_number("ptrace").unwrap() as u32;
+        let ptrace_nr = libc::SYS_ptrace as u32;
         let ret_k = find_ret_action_for_syscall(&filter.program, ptrace_nr, "ptrace");
         assert_eq!(
             ret_k,
@@ -456,12 +440,9 @@ mod tests {
     #[test]
     fn test_allow_all_sets_correct_rule_count() {
         let filter = SeccompFilterBuilder::new(SeccompAction::KillProcess)
-            .allow("exit")
-            .unwrap()
-            .allow("exit_group")
-            .unwrap()
-            .allow_all(&["read", "write", "close"])
-            .unwrap()
+            .allow(SYS_exit)
+            .allow(SYS_exit_group)
+            .allow_all(&[SYS_read, SYS_write, SYS_close])
             .build()
             .unwrap();
 
@@ -472,8 +453,7 @@ mod tests {
     #[test]
     fn test_deny_all_sets_correct_rule_count() {
         let filter = SeccompFilterBuilder::new(SeccompAction::Allow)
-            .deny_all(&["ptrace", "mount", "reboot"])
-            .unwrap()
+            .deny_all(&[SYS_ptrace, SYS_mount, SYS_reboot])
             .build()
             .unwrap();
 

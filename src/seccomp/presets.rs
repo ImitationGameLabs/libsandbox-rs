@@ -6,6 +6,12 @@
 //! arches so the builder can chain it unconditionally — the same idiom as
 //! [`LANDLOCK_CHILD_SYSCALLS`] below. On x86_64 the union `base ∪ companion`
 //! is byte-identical to the historical single-list preset.
+//!
+//! The elements are `SYS_*` constants (re-exported via
+//! [`super::syscalls`]), so the lists are checked at compile time — and a
+//! constant dropped from that re-export is a compile error here too.
+
+use super::syscalls::*;
 
 /// Essential syscalls for strict mode — the minimum set needed for basic
 /// command execution (dynamic linking, I/O, process spawning).
@@ -13,335 +19,352 @@
 /// **Note**: `ioctl` is included for terminal and fd operations, which
 /// implicitly allows `TIOCSTI`. Sandboxes sharing a terminal with the host
 /// should be aware of this escape vector.
-pub(super) const STRICT_SYSCALLS: &[&str] = &[
+pub(super) const STRICT_SYSCALLS: &[SyscallNumber] = &[
     // Core I/O
-    "read",
-    "write",
-    "readv",
-    "writev",
-    "close",
-    "fstat",
-    "lseek",
-    "pread64",
+    SYS_read,
+    SYS_write,
+    SYS_readv,
+    SYS_writev,
+    SYS_close,
+    SYS_fstat,
+    SYS_lseek,
+    SYS_pread64,
     // File access (dynamic linker needs these)
-    "openat",
-    "faccessat",
-    "readlinkat",
-    "getdents64",
-    "newfstatat",
+    SYS_openat,
+    SYS_faccessat,
+    SYS_readlinkat,
+    SYS_getdents64,
+    SYS_newfstatat,
     // Memory management (dynamic linker, heap)
-    "brk",
-    "mmap",
-    "munmap",
-    "mprotect",
-    "mremap",
-    "madvise",
+    SYS_brk,
+    SYS_mmap,
+    SYS_munmap,
+    SYS_mprotect,
+    SYS_mremap,
+    SYS_madvise,
     // Process lifecycle
-    "execve",
-    "exit",
-    "exit_group",
-    "clone",
-    "clone3",
-    "wait4",
+    SYS_execve,
+    SYS_exit,
+    SYS_exit_group,
+    SYS_clone,
+    SYS_clone3,
+    SYS_wait4,
     // Identity queries
-    "getpid",
-    "getppid",
-    "getuid",
-    "getgid",
-    "geteuid",
-    "getegid",
-    "getresuid",
-    "getresgid",
+    SYS_getpid,
+    SYS_getppid,
+    SYS_getuid,
+    SYS_getgid,
+    SYS_geteuid,
+    SYS_getegid,
+    SYS_getresuid,
+    SYS_getresgid,
     // Thread/process setup
-    "set_tid_address",
-    "set_robust_list",
-    "getrandom",
-    "prctl",
-    "rseq",
-    "uname",
+    SYS_set_tid_address,
+    SYS_set_robust_list,
+    SYS_getrandom,
+    SYS_prctl,
+    SYS_rseq,
+    SYS_uname,
     // Time
-    "clock_gettime",
+    SYS_clock_gettime,
     // Synchronization
-    "futex",
-    "sched_yield",
+    SYS_futex,
+    SYS_sched_yield,
     // Resource limits
-    "prlimit64",
+    SYS_prlimit64,
     // Signals
-    "rt_sigaction",
-    "rt_sigprocmask",
-    "rt_sigreturn",
-    "sigaltstack",
+    SYS_rt_sigaction,
+    SYS_rt_sigprocmask,
+    SYS_rt_sigreturn,
+    SYS_sigaltstack,
     // Pipe (for sh -c pipes)
-    "pipe2",
+    SYS_pipe2,
     // Descriptors
-    "dup",
-    "dup3",
-    "fcntl",
+    SYS_dup,
+    SYS_dup3,
+    SYS_fcntl,
     // Miscellaneous
-    "ioctl",
+    SYS_ioctl,
 ];
 
 /// x86-era legacy syscalls in the strict preset — absent on aarch64.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub(super) const STRICT_SYSCALLS_X86_ONLY: &[&str] =
-    &["access", "readlink", "pipe", "dup2", "fork", "getpgrp", "arch_prctl"];
+pub(super) const STRICT_SYSCALLS_X86_ONLY: &[SyscallNumber] = &[
+    SYS_access,
+    SYS_readlink,
+    SYS_pipe,
+    SYS_dup2,
+    SYS_fork,
+    SYS_getpgrp,
+    SYS_arch_prctl,
+];
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub(super) const STRICT_SYSCALLS_X86_ONLY: &[&str] = &[];
+pub(super) const STRICT_SYSCALLS_X86_ONLY: &[SyscallNumber] = &[];
 
 /// Syscalls allowed in standard mode.
-pub(super) const STANDARD_SYSCALLS: &[&str] = &[
+pub(super) const STANDARD_SYSCALLS: &[SyscallNumber] = &[
     // File operations (cross-arch — open/stat/access/dup2/etc. are x86-only, in
     // STANDARD_SYSCALLS_X86_ONLY; aarch64 uses the *at / dup3 variants here).
-    "read",
-    "write",
-    "openat",
-    "close",
-    "fstat",
-    "newfstatat",
-    "faccessat",
-    "readlinkat",
-    "getcwd",
-    "dup",
-    "dup3",
-    "fcntl",
-    "flock",
-    "fsync",
-    "fdatasync",
-    "truncate",
-    "ftruncate",
-    "getdents64",
-    "lseek",
+    SYS_read,
+    SYS_write,
+    SYS_openat,
+    SYS_close,
+    SYS_fstat,
+    SYS_newfstatat,
+    SYS_faccessat,
+    SYS_readlinkat,
+    SYS_getcwd,
+    SYS_dup,
+    SYS_dup3,
+    SYS_fcntl,
+    SYS_flock,
+    SYS_fsync,
+    SYS_fdatasync,
+    SYS_truncate,
+    SYS_ftruncate,
+    SYS_getdents64,
+    SYS_lseek,
     // Memory
-    "mmap",
-    "munmap",
-    "mprotect",
-    "mremap",
-    "brk",
-    "madvise",
+    SYS_mmap,
+    SYS_munmap,
+    SYS_mprotect,
+    SYS_mremap,
+    SYS_brk,
+    SYS_madvise,
     // Process
-    "clone",
-    "clone3",
-    "execve",
-    "wait4",
-    "waitid",
-    "getpid",
-    "getppid",
-    "gettid",
-    "exit",
-    "exit_group",
+    SYS_clone,
+    SYS_clone3,
+    SYS_execve,
+    SYS_wait4,
+    SYS_waitid,
+    SYS_getpid,
+    SYS_getppid,
+    SYS_gettid,
+    SYS_exit,
+    SYS_exit_group,
     // Time
-    "clock_gettime",
-    "clock_getres",
-    "clock_nanosleep",
-    "nanosleep",
-    "gettimeofday",
+    SYS_clock_gettime,
+    SYS_clock_getres,
+    SYS_clock_nanosleep,
+    SYS_nanosleep,
+    SYS_gettimeofday,
     // Resource limits
-    "getrlimit",
-    "setrlimit",
-    "prlimit64",
-    "getrusage",
+    SYS_getrlimit,
+    SYS_setrlimit,
+    SYS_prlimit64,
+    SYS_getrusage,
     // Signals
-    "rt_sigaction",
-    "rt_sigprocmask",
-    "rt_sigreturn",
-    "sigaltstack",
-    "rt_sigpending",
-    "rt_sigsuspend",
-    "kill",
-    "tgkill",
+    SYS_rt_sigaction,
+    SYS_rt_sigprocmask,
+    SYS_rt_sigreturn,
+    SYS_sigaltstack,
+    SYS_rt_sigpending,
+    SYS_rt_sigsuspend,
+    SYS_kill,
+    SYS_tgkill,
     // I/O
-    "readv",
-    "writev",
-    "pread64",
-    "pwrite64",
-    "ppoll",
-    "epoll_create1",
-    "epoll_ctl",
-    "epoll_pwait",
+    SYS_readv,
+    SYS_writev,
+    SYS_pread64,
+    SYS_pwrite64,
+    SYS_ppoll,
+    SYS_epoll_create1,
+    SYS_epoll_ctl,
+    SYS_epoll_pwait,
     // Pipes
-    "pipe2",
+    SYS_pipe2,
     // Sockets
-    "socket",
-    "connect",
-    "accept",
-    "accept4",
-    "sendto",
-    "recvfrom",
-    "sendmsg",
-    "recvmsg",
-    "bind",
-    "listen",
-    "getsockname",
-    "getpeername",
-    "setsockopt",
-    "getsockopt",
-    "socketpair",
-    "shutdown",
+    SYS_socket,
+    SYS_connect,
+    SYS_accept,
+    SYS_accept4,
+    SYS_sendto,
+    SYS_recvfrom,
+    SYS_sendmsg,
+    SYS_recvmsg,
+    SYS_bind,
+    SYS_listen,
+    SYS_getsockname,
+    SYS_getpeername,
+    SYS_setsockopt,
+    SYS_getsockopt,
+    SYS_socketpair,
+    SYS_shutdown,
     // Futex / scheduling
-    "futex",
-    "sched_yield",
+    SYS_futex,
+    SYS_sched_yield,
     // Miscellaneous
-    "set_tid_address",
-    "set_robust_list",
-    "get_robust_list",
-    "close_range",
-    "getrandom",
-    "prctl",
-    "uname",
-    "sysinfo",
-    "ioctl",
-    "rseq",
-    "splice",
-    "copy_file_range",
-    "umask",
+    SYS_set_tid_address,
+    SYS_set_robust_list,
+    SYS_get_robust_list,
+    SYS_close_range,
+    SYS_getrandom,
+    SYS_prctl,
+    SYS_uname,
+    SYS_sysinfo,
+    SYS_ioctl,
+    SYS_rseq,
+    SYS_splice,
+    SYS_copy_file_range,
+    SYS_umask,
     // User/group identity
-    "getuid",
-    "getgid",
-    "geteuid",
-    "getegid",
-    "getgroups",
-    "getresuid",
-    "getresgid",
+    SYS_getuid,
+    SYS_getgid,
+    SYS_geteuid,
+    SYS_getegid,
+    SYS_getgroups,
+    SYS_getresuid,
+    SYS_getresgid,
 ];
 
 /// x86-era legacy syscalls in the standard preset — absent on aarch64.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub(super) const STANDARD_SYSCALLS_X86_ONLY: &[&str] = &[
-    "open",
-    "stat",
-    "lstat",
-    "access",
-    "readlink",
-    "getdents",
-    "dup2",
-    "fork",
-    "vfork",
-    "getpgrp",
-    "select",
-    "poll",
-    "epoll_create",
-    "epoll_wait",
-    "pipe",
-    "arch_prctl",
-    "fadvise64",
+pub(super) const STANDARD_SYSCALLS_X86_ONLY: &[SyscallNumber] = &[
+    SYS_open,
+    SYS_stat,
+    SYS_lstat,
+    SYS_access,
+    SYS_readlink,
+    SYS_getdents,
+    SYS_dup2,
+    SYS_fork,
+    SYS_vfork,
+    SYS_getpgrp,
+    SYS_select,
+    SYS_poll,
+    SYS_epoll_create,
+    SYS_epoll_wait,
+    SYS_pipe,
+    SYS_arch_prctl,
+    SYS_fadvise64,
 ];
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub(super) const STANDARD_SYSCALLS_X86_ONLY: &[&str] = &[];
+pub(super) const STANDARD_SYSCALLS_X86_ONLY: &[SyscallNumber] = &[];
 
 /// Extra syscalls allowed in permissive mode (on top of STANDARD_SYSCALLS).
-pub(super) const PERMISSIVE_EXTRA_SYSCALLS: &[&str] = &[
+pub(super) const PERMISSIVE_EXTRA_SYSCALLS: &[SyscallNumber] = &[
     // More file operations (cross-arch — link/unlink/rename/mkdir/chmod/chown
     // legacy equivalents are x86-only, in PERMISSIVE_EXTRA_SYSCALLS_X86_ONLY).
-    "linkat",
-    "unlinkat",
-    "renameat",
-    "renameat2",
-    "mkdirat",
-    "fchmod",
-    "fchmodat",
-    "fchown",
-    "fchownat",
-    "utimensat",
+    SYS_linkat,
+    SYS_unlinkat,
+    SYS_renameat,
+    SYS_renameat2,
+    SYS_mkdirat,
+    SYS_fchmod,
+    SYS_fchmodat,
+    SYS_fchown,
+    SYS_fchownat,
+    SYS_utimensat,
     // More process
-    "execveat",
-    "pidfd_open",
-    "pidfd_send_signal",
+    SYS_execveat,
+    SYS_pidfd_open,
+    SYS_pidfd_send_signal,
     // More memory
-    "msync",
-    "mincore",
+    SYS_msync,
+    SYS_mincore,
     // More I/O
-    "preadv",
-    "pwritev",
-    "tee",
-    "vmsplice",
-    "process_madvise",
+    SYS_preadv,
+    SYS_pwritev,
+    SYS_tee,
+    SYS_vmsplice,
+    SYS_process_madvise,
     // Eventfd / timerfd
-    "eventfd2",
-    "timerfd_create",
-    "timerfd_settime",
-    "timerfd_gettime",
-    "timer_create",
-    "timer_settime",
-    "timer_gettime",
-    "timer_delete",
+    SYS_eventfd2,
+    SYS_timerfd_create,
+    SYS_timerfd_settime,
+    SYS_timerfd_gettime,
+    SYS_timer_create,
+    SYS_timer_settime,
+    SYS_timer_gettime,
+    SYS_timer_delete,
     // Time
-    "clock_adjtime",
+    SYS_clock_adjtime,
     // Signalfd
-    "signalfd4",
+    SYS_signalfd4,
     // Inotify
-    "inotify_init1",
-    "inotify_add_watch",
-    "inotify_rm_watch",
+    SYS_inotify_init1,
+    SYS_inotify_add_watch,
+    SYS_inotify_rm_watch,
     // Scheduling
-    "sched_getaffinity",
-    "sched_setaffinity",
-    "sched_get_priority_max",
-    "sched_get_priority_min",
+    SYS_sched_getaffinity,
+    SYS_sched_setaffinity,
+    SYS_sched_get_priority_max,
+    SYS_sched_get_priority_min,
     // Misc
-    "syslog",
-    "futex_waitv",
+    SYS_syslog,
+    SYS_futex_waitv,
     // User/namespace
-    "setgroups",
-    "epoll_pwait2",
+    SYS_setgroups,
+    SYS_epoll_pwait2,
     // Landlock (modern sandboxing)
-    "landlock_create_ruleset",
-    "landlock_add_rule",
-    "landlock_restrict_self",
+    SYS_landlock_create_ruleset,
+    SYS_landlock_add_rule,
+    SYS_landlock_restrict_self,
 ];
 
 /// x86-era legacy syscalls in the permissive-extras set — absent on aarch64.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub(super) const PERMISSIVE_EXTRA_SYSCALLS_X86_ONLY: &[&str] = &[
-    "link", "unlink", "rename", "mkdir", "rmdir", "chmod", "chown", "lchown", "time", "eventfd",
-    "inotify_init", "signalfd",
+pub(super) const PERMISSIVE_EXTRA_SYSCALLS_X86_ONLY: &[SyscallNumber] = &[
+    SYS_link,
+    SYS_unlink,
+    SYS_rename,
+    SYS_mkdir,
+    SYS_rmdir,
+    SYS_chmod,
+    SYS_chown,
+    SYS_lchown,
+    SYS_time,
+    SYS_eventfd,
+    SYS_inotify_init,
+    SYS_signalfd,
 ];
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub(super) const PERMISSIVE_EXTRA_SYSCALLS_X86_ONLY: &[&str] = &[];
+pub(super) const PERMISSIVE_EXTRA_SYSCALLS_X86_ONLY: &[SyscallNumber] = &[];
 
 /// Syscalls blocked in all modes.
-pub(super) const BLOCKED_SYSCALLS: &[&str] = &[
-    "ptrace",
-    "kcmp", // cross-process memory comparison — cross-agent info leak side-channel
-    "process_vm_readv",
-    "process_vm_writev",
-    "open_by_handle_at", // fd-handle open bypasses path resolution — chroot break-out
-    "kexec_load",
-    "kexec_file_load",
-    "init_module",
-    "finit_module",
-    "delete_module",
-    "reboot",
-    "swapon",
-    "swapoff",
-    "mount",
-    "umount2",
-    "pivot_root",
-    "chroot",
-    "setns",
-    "unshare",
-    "userfaultfd",
-    "bpf",             // eBPF subsystem — can bypass seccomp on older kernels
-    "perf_event_open", // performance counters — info leak / side-channel
-    "acct",            // process accounting — arbitrary filesystem write
-    "vhangup",         // virtual terminal hangup — DoS
-    "personality",     // execution domain — ABI manipulation
+pub(super) const BLOCKED_SYSCALLS: &[SyscallNumber] = &[
+    SYS_ptrace,
+    SYS_kcmp, // cross-process memory comparison — cross-agent info leak side-channel
+    SYS_process_vm_readv,
+    SYS_process_vm_writev,
+    SYS_open_by_handle_at, // fd-handle open bypasses path resolution — chroot break-out
+    SYS_kexec_load,
+    SYS_kexec_file_load,
+    SYS_init_module,
+    SYS_finit_module,
+    SYS_delete_module,
+    SYS_reboot,
+    SYS_swapon,
+    SYS_swapoff,
+    SYS_mount,
+    SYS_umount2,
+    SYS_pivot_root,
+    SYS_chroot,
+    SYS_setns,
+    SYS_unshare,
+    SYS_userfaultfd,
+    SYS_bpf,             // eBPF subsystem — can bypass seccomp on older kernels
+    SYS_perf_event_open, // performance counters — info leak / side-channel
+    SYS_acct,            // process accounting — arbitrary filesystem write
+    SYS_vhangup,         // virtual terminal hangup — DoS
+    SYS_personality,     // execution domain — ABI manipulation
     // New mount API — defense-in-depth for dynamic mount operations.
     // These are blocked in the child so the sandboxed process cannot
     // interfere with dynamic mounts managed by the parent.
-    "open_tree",     // create detached mount (kernel 5.2+)
-    "move_mount",    // attach mount object (kernel 5.2+)
-    "mount_setattr", // change mount attributes (kernel 5.12+)
+    SYS_open_tree,     // create detached mount (kernel 5.2+)
+    SYS_move_mount,    // attach mount object (kernel 5.2+)
+    SYS_mount_setattr, // change mount attributes (kernel 5.12+)
 ];
 
 /// x86-only syscalls blocked in all modes — absent on aarch64.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub(super) const BLOCKED_SYSCALLS_X86_ONLY: &[&str] = &[
-    "iopl",       // I/O port access — ring 0 escalation
-    "ioperm",     // I/O port permissions — ring 0 escalation
-    "modify_ldt", // LDT manipulation — signal handler bypass
+pub(super) const BLOCKED_SYSCALLS_X86_ONLY: &[SyscallNumber] = &[
+    SYS_iopl,       // I/O port access — ring 0 escalation
+    SYS_ioperm,     // I/O port permissions — ring 0 escalation
+    SYS_modify_ldt, // LDT manipulation — signal handler bypass
 ];
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub(super) const BLOCKED_SYSCALLS_X86_ONLY: &[&str] = &[];
+pub(super) const BLOCKED_SYSCALLS_X86_ONLY: &[SyscallNumber] = &[];
 
 /// Syscalls a sandboxed child needs to enter a landlock domain.
 ///
@@ -354,6 +377,6 @@ pub(super) const BLOCKED_SYSCALLS_X86_ONLY: &[&str] = &[];
 /// Empty when the `landlock` feature is off, so non-landlock builds produce byte-identical
 /// BPF programs.
 #[cfg(feature = "landlock")]
-pub(super) const LANDLOCK_CHILD_SYSCALLS: &[&str] = &["landlock_restrict_self"];
+pub(super) const LANDLOCK_CHILD_SYSCALLS: &[SyscallNumber] = &[SYS_landlock_restrict_self];
 #[cfg(not(feature = "landlock"))]
-pub(super) const LANDLOCK_CHILD_SYSCALLS: &[&str] = &[];
+pub(super) const LANDLOCK_CHILD_SYSCALLS: &[SyscallNumber] = &[];
