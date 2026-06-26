@@ -60,6 +60,11 @@ use super::fd::{close_raw, read_raw, write_all_raw};
 /// directly. The framework translates the error into the spawn error-pipe
 /// frame and surfaces it to the parent as a [`SandboxError`](crate::error::SandboxError)
 /// at stage [`ChildStage::Hook`].
+///
+/// The hook **must be bounded**: `spawn()` blocks on the error pipe until the
+/// child commits (close-on-success / write-on-failure), so a hook that runs
+/// forever hangs `spawn()`. The built-in setup steps (dup2/mount/chdir/rlimits/
+/// seccomp) are bounded kernel calls; only this hook is arbitrary caller code.
 pub type ChildSetup = Box<dyn Fn(&ChildCtx) -> Result<()> + Send + Sync>;
 
 /// Read-only context handed to a [`ChildSetup`] hook.
@@ -259,10 +264,24 @@ pub fn exec_sandboxed(payload: &ChildPayload) -> isize {
     let _ = close_raw(payload.ready_read_fd);
 
     // Report a tagged setup failure to the parent and abort.
-    // Writes the wire frame [tag:u8][msg:bytes] consumed by the parent drain.
+    //
+    // Writes the wire frame `[tag:u8][msg:bytes]` then closes the pipe. The
+    // parent's drain (see `run_prepared` step 10) loops reading until EOF, so it
+    // reassembles the complete frame however the kernel split the delivery -- the
+    // close (EOF) is what delimits the frame, not a single-write atomicity
+    // guarantee. The PIPE_BUF cap keeps the frame at or under one atomic write in
+    // the common case (so it usually lands in a single read); `msg` is capped to
+    // `PIPE_BUF - 1` bytes so the whole frame stays at or under `PIPE_BUF`.
+    // Closing the pipe is also what lets the parent's blocking drain terminate:
+    // on success `exec_sandboxed` closes the error pipe without writing (the
+    // success signal), and the pipe is O_CLOEXEC so it auto-closes at exec.
     fn child_abort(error_write: RawFd, stage: ChildStage, msg: &str) -> isize {
-        let _ = write_all_raw(error_write, std::slice::from_ref(&(stage as u8)));
-        let _ = write_all_raw(error_write, msg.as_bytes());
+        let cap = libc::PIPE_BUF.saturating_sub(1);
+        let msg_bytes = msg.as_bytes().get(..cap).unwrap_or(msg.as_bytes());
+        let mut frame = Vec::with_capacity(1 + msg_bytes.len());
+        frame.push(stage as u8);
+        frame.extend_from_slice(msg_bytes);
+        let _ = write_all_raw(error_write, &frame);
         let _ = close_raw(error_write);
         1
     }

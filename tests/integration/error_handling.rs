@@ -383,3 +383,39 @@ fn test_error_display_user_friendly() {
         );
     }
 }
+
+/// A `ChildSetup` hook that returns `Err` must surface at `spawn()` time as an
+/// `Exec`-category error tagged at `ChildStage::Hook` -- deterministically, every
+/// run. This exercises the spawn error-pipe drain: the parent blocks on the error
+/// pipe until the child commits, so the hook failure is reported here rather than
+/// being missed and later confused with the target program exiting non-zero.
+#[test]
+fn test_child_setup_hook_failure_surfaces_at_spawn() {
+    let sandbox = Sandbox::builder()
+        .filesystem(
+            FilesystemConfig::builder()
+                .working_dir("/tmp")
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+
+    let err = sandbox
+        .build_spawn("true", &[])
+        .child_setup(|_ctx| Err(SandboxError::new(ErrorKind::Other, "hook-failure-sentinel")))
+        .start()
+        .expect_err("a failing ChildSetup hook must surface at spawn");
+
+    assert_eq!(err.kind(), ErrorKind::Exec, "got: {err:?}");
+    assert!(
+        err.context().contains("child-hook"),
+        "expected ChildStage::Hook in context, got: {}",
+        err.context()
+    );
+    assert!(
+        err.context().contains("hook-failure-sentinel"),
+        "expected the hook's message in context, got: {}",
+        err.context()
+    );
+}

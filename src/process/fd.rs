@@ -38,6 +38,18 @@ pub(crate) fn write_all_raw(fd: RawFd, mut data: &[u8]) -> nix::Result<()> {
     Ok(())
 }
 
+/// Single `read(2)`, retrying on EINTR. Unlike `write_all_raw` this does NOT loop
+/// to fill the buffer -- it returns whatever the kernel gives in one call. Used by
+/// the spawn error-pipe drain, which loops itself to reassemble the full frame.
+pub(super) fn read_retry(fd: RawFd, buf: &mut [u8]) -> nix::Result<usize> {
+    loop {
+        match read_raw(fd, buf) {
+            Err(nix::errno::Errno::EINTR) => continue,
+            other => return other,
+        }
+    }
+}
+
 /// Set `O_NONBLOCK` on a file descriptor.
 pub(super) fn set_nonblock(fd: RawFd) -> nix::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };

@@ -26,8 +26,7 @@
 use super::child::{Child, NamespaceFds, StdioFds};
 use super::child_setup::{exec_sandboxed, ChildCtx, ChildPayload, ChildSetup, PreparedRlimits};
 use super::fd::{
-    abort_child_startup, kill_and_reap, open_namespace_fd, read_raw, set_nonblock, try_pidfd_open,
-    AutoCloseFd,
+    abort_child_startup, kill_and_reap, open_namespace_fd, read_retry, try_pidfd_open, AutoCloseFd,
 };
 use crate::builder::SandboxConfig;
 use crate::cgroup::{configure_cgroup, needs_cgroup, LimitPlan};
@@ -38,9 +37,10 @@ use crate::network::ProxiedNetwork;
 use crate::result::{LimitDiagnostics, LimitStatus};
 use crate::seccomp::SeccompFilter;
 use crate::stdio::{Stdio, StdioSlot, StreamRole};
+use nix::fcntl::OFlag;
 use nix::sched::CloneFlags;
 use nix::sys::signal::Signal;
-use nix::unistd::pipe;
+use nix::unistd::{pipe, pipe2};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::unix::io::IntoRawFd;
@@ -206,7 +206,11 @@ pub fn run_prepared(mut prep: PreparedSandbox) -> Result<(Child, LimitDiagnostic
     let mut stdout_slot = StdioSlot::resolve(prep.stdout, StreamRole::Stdout)?;
     let mut stderr_slot = StdioSlot::resolve(prep.stderr, StreamRole::Stderr)?;
 
-    // 3. Create ready (parent→child) and error (child→parent) pipes.
+    // 3. Create ready (parent->child) and error (child->parent) pipes. The error
+    //    pipe is created with `O_CLOEXEC` so the child's write end auto-closes at
+    //    `execvpe`: the parent's drain then sees EOF exactly when the child
+    //    commits to running the target program, regardless of which setup path
+    //    ran. This is the guarantee the blocking drain (step 10) relies on.
     let (r, w) = pipe().map_err(|e| {
         SandboxError::new(
             ErrorKind::Exec,
@@ -216,7 +220,7 @@ pub fn run_prepared(mut prep: PreparedSandbox) -> Result<(Child, LimitDiagnostic
     let mut ready_read = AutoCloseFd::new(r.into_raw_fd());
     let ready_write = AutoCloseFd::new(w.into_raw_fd());
 
-    let (r, w) = pipe().map_err(|e| {
+    let (r, w) = pipe2(OFlag::O_CLOEXEC).map_err(|e| {
         SandboxError::new(
             ErrorKind::Exec,
             format!("create pipe for error reporting: {e}"),
@@ -348,26 +352,38 @@ pub fn run_prepared(mut prep: PreparedSandbox) -> Result<(Child, LimitDiagnostic
         )
     })?;
 
-    // 10. Non-blocking error drain: the child writes [tag:u8][msg] on failure
-    //     or just closes (EOF) on success. O_NONBLOCK is set BEFORE the read so
-    //     this does not block until setup completes (which would perturb
-    //     wall_time_limit under concurrent execution).
-    set_nonblock(error_read.raw()).map_err(|e| {
-        // The child has already been released (step 9). On failure we must reap
-        // it — no `Child` is built past this point, so without reap it would run
-        // orphaned and become a zombie. Mirrors the uid/gid-map and cgroup
-        // abort branches; `ready_write` is already consumed, so no drop needed.
-        kill_and_reap(child_pid);
-        SandboxError::new(ErrorKind::Exec, format!("set error pipe non-blocking: {e}"))
-    })?;
+    // 10. Blocking error drain. The child either closes the error pipe on
+    //     successful setup (the success signal: `exec_sandboxed`'s last step
+    //     before exec, and the pipe is O_CLOEXEC so it auto-closes at exec
+    //     regardless) or writes a `[tag:u8][msg]` frame then closes on failure.
+    //     We BLOCK on the read until the child commits -- this is what makes
+    //     every setup failure surface here instead of being missed as a
+    //     non-blocking EAGAIN and later confused with the target program exiting
+    //     non-zero. The child always commits in bounded time (the built-in steps
+    //     are bounded kernel calls; only a caller `ChildSetup` hook could hang,
+    //     which is the caller's responsibility). The drain cost counts toward
+    //     `report.duration` (clocked from `run()` entry) but NOT toward the
+    //     `wall_time_limit` kill budget, whose timer starts at `wait_with_timeout`
+    //     entry, after this drain.
     let mut error_buf = [0u8; 4096];
-    match read_raw(error_read.raw(), &mut error_buf) {
+    match read_retry(error_read.raw(), &mut error_buf) {
         Ok(0) => {
+            // EOF -- child closed without writing: successful setup.
             let _ = error_read.close();
         }
         Ok(n) => {
+            // Frame start. The child writes the whole frame then closes, so we
+            // loop-read until EOF to reassemble the complete frame however the
+            // kernel split the delivery, then decode `[tag][msg]`.
+            let mut frame = error_buf[..n].to_vec();
+            loop {
+                match read_retry(error_read.raw(), &mut error_buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(m) => frame.extend_from_slice(&error_buf[..m]),
+                }
+            }
             let _ = error_read.close();
-            let (tag_byte, msg_bytes) = error_buf[..n].split_first().unwrap_or((&0, &[]));
+            let (tag_byte, msg_bytes) = frame.split_first().unwrap_or((&0, &[]));
             let stage = ChildStage::from_tag(*tag_byte);
             let msg = String::from_utf8_lossy(msg_bytes);
             kill_and_reap(child_pid);
@@ -376,10 +392,14 @@ pub fn run_prepared(mut prep: PreparedSandbox) -> Result<(Child, LimitDiagnostic
                 format!("child setup failed at {}: {}", stage, msg),
             ));
         }
-        Err(_) => {
-            // EAGAIN — child hasn't finished setup; assume success, surface
-            // later via exit code.
+        Err(e) => {
+            // Unexpected read error on a fresh pipe; surface it rather than mask.
             let _ = error_read.close();
+            kill_and_reap(child_pid);
+            return Err(SandboxError::new(
+                ErrorKind::Exec,
+                format!("read child error pipe: {e}"),
+            ));
         }
     }
 
