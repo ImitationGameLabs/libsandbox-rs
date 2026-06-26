@@ -5,7 +5,7 @@
 //! - Execution metrics collection
 //! - Security audit logging
 
-use libsandbox::config::{FilesystemConfig, ResourceConfig};
+use libsandbox::config::{FilesystemConfig, NamespaceConfig, ProcfsMode, ResourceConfig};
 use libsandbox::{ErrorKind, ResourceEnforcement, Sandbox, SandboxError};
 use std::time::Duration;
 
@@ -132,13 +132,24 @@ fn test_exit_code_accuracy() {
 #[test]
 #[cfg(unix)]
 fn test_signal_capture() {
+    // The PID namespace is disabled so the child is *not* PID 1: the kernel
+    // otherwise protects a namespace's init from signals sent within that
+    // namespace (including self-sent SIGKILL), so the child could never die
+    // from its own signal. With a host PID namespace the child is an ordinary
+    // process in its own process group (the spawn pipeline calls `setpgid`),
+    // so `kill -9 0` — signalling the caller's own process group —
+    // deterministically SIGKILLs it with no PID-number dependency and no
+    // orphaned shell. `procfs(Leave)` is required because mounting `/proc`
+    // needs a PID namespace.
     let sandbox = Sandbox::builder()
         .filesystem(
             FilesystemConfig::builder()
                 .working_dir("/tmp")
+                .procfs(ProcfsMode::Leave)
                 .build()
                 .unwrap(),
         )
+        .namespace(NamespaceConfig::builder().pid(false).build())
         .resources(
             ResourceConfig::builder()
                 .wall_time_limit(Duration::from_secs(5))
@@ -148,25 +159,16 @@ fn test_signal_capture() {
         .build()
         .unwrap();
 
-    // `kill -9 $$` is brittle here because shell PID semantics vary once the
-    // command is running as PID 1 inside the sandbox's PID namespace. Use a
-    // helper child to signal its parent shell instead.
-    let result = sandbox
-        .run(
-            "sh",
-            &["-c", "(sleep 0.1; kill -9 \"$PPID\") & while :; do :; done"],
-        )
-        .unwrap();
+    let result = sandbox.run("sh", &["-c", "kill -9 0"]).unwrap();
 
-    // Should capture the signal
-    assert!(
-        result.signal.is_some() || result.exit_code != 0,
-        "Signal or non-zero exit should be captured"
+    // The child died from SIGKILL, so the signal must be captured verbatim.
+    assert_eq!(
+        result.signal,
+        Some(9),
+        "child should be killed by SIGKILL (9), got signal={:?}, exit_code={}",
+        result.signal,
+        result.exit_code,
     );
-
-    if let Some(signal) = result.signal {
-        assert_eq!(signal, 9, "Should be SIGKILL (9)");
-    }
 }
 
 /// Test: Timeout flag should be accurate
