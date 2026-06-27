@@ -102,11 +102,14 @@ pub use landlock::{
     install_landlock, landlock_hook, prepare_landlock, AccessDecision, PreparedLandlock, ReadPolicy,
 };
 
-// Mount read-only-hole primitives (Linux only; libc syscalls, no extra dependency). A
-// child-side prepare/install pair mirroring the landlock/seccomp primitives, intended for
-// a caller-driven `pre_exec`.
+// Mount-namespace child-side primitives (Linux only; libc syscalls, no extra dependency). A
+// `prepare_*`/`install_*` pair mirroring the landlock/seccomp/rlimits primitives, for a
+// caller-driven `pre_exec`.
 #[cfg(target_os = "linux")]
-pub use mount::holes::{install_mount_holes, prepare_mount_holes, PreparedMountHoles};
+pub use mount::child::{
+    install_bind, install_user_mount_ns, prepare_bind, prepare_user_mount_ns, PreparedBind,
+    PreparedUserMountNs, RemountRecursion,
+};
 
 /// 1 KB in bytes
 pub const KB: u64 = 1024;

@@ -194,7 +194,7 @@ impl From<std::ffi::NulError> for SandboxError {
 // for the two kinds whose construction proliferated across the crate; their
 // context templates deliberately omit the kind word.
 //
-// Not every per-kind constructor lives here: `mount_err` (`mount/holes.rs`)
+// Not every per-kind constructor lives here: `mount_err` (`mount/child.rs`)
 // and `ll_error` (`landlock/mod.rs`) are deliberately kept local — they flatten
 // a *foreign* error type's `Display` (errno / landlock-crate error), which is a
 // module-local concern, not the crate-wide double-prefix policy this family

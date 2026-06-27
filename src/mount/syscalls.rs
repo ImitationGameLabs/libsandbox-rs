@@ -3,7 +3,7 @@
 //! Provides safe-ish wrappers around `open_tree(2)`, `move_mount(2)`, and a
 //! fork-based helper that satisfies the single-threaded `setns()` constraint.
 
-use super::ops::permission_to_remount_flags;
+use super::ops::{permission_to_remount_flags, remount_flags};
 use crate::config::Permission;
 use crate::error::{ErrorKind, Result, SandboxError};
 use std::ffi::CString;
@@ -408,10 +408,7 @@ pub(crate) fn dynamic_bind_mount(
     let recursive = source.is_dir();
 
     // Pre-allocate the permission flags so the helper doesn't need to compute them.
-    let remount_flags = match permission {
-        Permission::ReadWrite => None,
-        _ => Some(permission_to_remount_flags(permission, recursive)),
-    };
+    let remount_flags = remount_flags(permission, recursive);
     let need_remount = remount_flags.is_some();
     let flags_val = remount_flags.unwrap_or(nix::mount::MsFlags::empty());
 

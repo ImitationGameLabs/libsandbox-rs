@@ -4,7 +4,7 @@
 //! [`crate::process::child_setup::exec_sandboxed`]); the dynamic mount primitives
 //! live in [`crate::mount::syscalls`].
 
-use crate::config::{Mount, Permission, ProcfsMode, RootfsMode};
+use crate::config::{Mount, MountFlags, Permission, ProcfsMode, RootfsMode};
 use crate::error::{ErrorKind, Result, SandboxError};
 use std::path::{Path, PathBuf};
 
@@ -49,6 +49,20 @@ pub(crate) fn permission_to_remount_flags(
     }
 }
 
+/// Compute the remount flags for a bind mount, or `None` when no remount is needed.
+///
+/// `ReadWrite` and an empty `Custom` flag set skip the remount entirely — a no-op
+/// `MS_BIND|MS_REMOUNT` would otherwise be issued. This is the single gate shared by
+/// `bind_mount`, `dynamic_bind_mount`, and the child-side `install_bind` primitive so the three
+/// cannot drift on which permissions trigger a remount.
+pub(crate) fn remount_flags(permission: &Permission, recursive: bool) -> Option<nix::mount::MsFlags> {
+    match permission {
+        Permission::ReadWrite => None,
+        Permission::Custom(flags) if *flags == MountFlags::NONE => None,
+        _ => Some(permission_to_remount_flags(permission, recursive)),
+    }
+}
+
 pub(crate) fn make_mounts_private() -> Result<()> {
     use nix::mount::{mount, MsFlags};
 
@@ -59,7 +73,6 @@ pub(crate) fn make_mounts_private() -> Result<()> {
 }
 
 pub(crate) fn bind_mount(source: &Path, target: &Path, permission: Permission) -> Result<()> {
-    use crate::config::MountFlags;
     use nix::mount::{mount, MsFlags};
 
     let recursive = source.is_dir();
@@ -92,22 +105,8 @@ pub(crate) fn bind_mount(source: &Path, target: &Path, permission: Permission) -
     })?;
 
     // Apply mount options via remount when the permission requests any flags.
-    let needs_remount = match &permission {
-        Permission::ReadOnly => true,
-        Permission::ReadWrite => false,
-        Permission::Custom(flags) => *flags != MountFlags::NONE,
-    };
-
-    if needs_remount {
-        let remount_flags = permission_to_remount_flags(&permission, recursive);
-        mount(
-            None::<&str>,
-            target,
-            None::<&str>,
-            remount_flags,
-            None::<&str>,
-        )
-        .map_err(|e| {
+    if let Some(remount_flags) = remount_flags(&permission, recursive) {
+        mount(None::<&str>, target, None::<&str>, remount_flags, None::<&str>).map_err(|e| {
             SandboxError::new(
                 ErrorKind::Mount,
                 format!("remount {} -> {}: {e}", source.display(), target.display()),
