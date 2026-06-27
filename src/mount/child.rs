@@ -13,6 +13,10 @@
 //! Unlike a sealed "apply the readonly-hole scenario" API, these are primitives the caller
 //! composes: any permutation of read-only / read-write / recursive binds, in any order.
 //!
+//! [`install_mount`] is the general escape hatch beneath the curated primitives: an arbitrary
+//! `mount(2)` for what [`install_bind`] / [`install_tmpfs`] do not cover. Prefer the curated
+//! primitives; reach for it only then.
+//!
 //! # Composition order (a correctness invariant; do not reorder)
 //!
 //! When composed with landlock and seccomp, the required order is
@@ -33,6 +37,11 @@
 //! - when layering multiple binds, install writable children **before** their read-only
 //!   ancestors: a non-recursive remount on the ancestor preserves a nested child mount's
 //!   writability (see `readonly_ancestor_with_writable_child_overlay`).
+//! - `install_mount` (the escape hatch) has **no universal slot**. An overlay/tmpfs-shaped mount
+//!   goes in the tmpfs slot above (**after** binds): a mount at a path buries any earlier mount at
+//!   a prefix of that path, which is why the curated tmpfs slot is post-bind. A proc-over-`/proc`
+//!   or bind-shaped mount's order relative to the binds depends on intent. The library does not
+//!   sequence mounts for you; see [`install_mount`] for guidance.
 //!
 //! Run these from a caller-driven `pre_exec`, NOT a `ChildSetup` hook — the hook runs after
 //! seccomp (`src/process/child_setup.rs`), which would trap the syscalls above.
@@ -343,6 +352,157 @@ pub fn install_tmpfs(prepared: &PreparedTmpfs) -> Result<()> {
         ) != 0
         {
             return Err(mount_err("mount tmpfs overlay"));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// General mount (escape hatch beneath the curated primitives)
+// ---------------------------------------------------------------------------
+
+/// Parent-side-prepared arbitrary `mount(2)` — the escape hatch beneath the curated primitives.
+/// Built by [`prepare_mount`]; the child consumes it via [`install_mount`]. `source`/`data` are
+/// redacted in `Debug` (they may carry secrets); see [`prepare_mount`] for the full contract.
+#[derive(Clone)]
+pub struct PreparedMount {
+    source: Option<CString>,
+    target: CString,
+    fstype: CString,
+    data: Option<CString>,
+    flags: libc::c_ulong,
+}
+
+impl std::fmt::Debug for PreparedMount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Redact `source`/`data`: an escape-hatch mount can carry data you may not want in logs
+        // (an overlay upperdir/lowerdir path). `target`/`fstype`/`flags` describe the operation.
+        f.debug_struct("PreparedMount")
+            .field("source", &self.source.as_ref().map(|_| "<redacted>"))
+            .field("target", &self.target)
+            .field("fstype", &self.fstype)
+            .field("data", &self.data.as_ref().map(|_| "<redacted>"))
+            .field("flags", &self.flags)
+            .finish()
+    }
+}
+
+/// Escape hatch: prepare an arbitrary `mount(2)`. Argument order mirrors `mount(2)`:
+/// `source, target, fstype, flags, data`. The strings are built here as `CString`s; the child
+/// issues one raw `mount`.
+///
+/// `source` is `&str` (not `&Path`): `mount(2)` treats it as an opaque string (a path for binds,
+/// but unused or an fstype-name for other mounts). For a bind on a non-UTF-8 path, convert with
+/// `OsStr::to_str` and reject `None`.
+///
+/// Prefer [`install_bind`] / [`install_tmpfs`] when they fit; this exists for what they do not
+/// cover (overlayfs, fuse, a custom proc config, a raw bind with flags the curated vocabulary
+/// cannot express). It lets an unanticipated mount be done with the same async-signal-safe,
+/// fail-closed machinery as the curated primitives, instead of hand-rolled `libc::mount`.
+///
+/// # No security curation — caller takes responsibility
+///
+/// Unlike the curated primitives, this makes **no** claim that the resulting mount is safe for the
+/// sandboxed process to touch. The caller owns the full implications of `fstype`/`data`/`flags`:
+///
+/// - A tmpfs/scratch the sandboxed process can reach should pass `MS_NODEV | MS_NOSUID |
+///   MS_NOEXEC` and a bounded `size=` in `data` — otherwise it is attacker-controlled writable +
+///   exec space and a memory-exhaustion DoS. ([`prepare_tmpfs`] bakes the flag mapping in; this
+///   does not.)
+/// - `MS_REMOUNT` / `MS_BIND` pointed at a path a curated primitive already configured can
+///   silently weaken it.
+/// - This is the *in-sandbox* surface. The *host* surface is handled **when
+///   [`install_user_mount_ns`] has run first** (the documented composition order): a fresh mount
+///   inside the less-privileged user namespace cannot re-establish propagation back to the host,
+///   even with `MS_SHARED`. Without that userns entry (e.g. a privileged setup path that skips
+///   it), an `MS_SHARED`/`MS_REC`-style mount can mutate the host mount table.
+/// - `MS_REC` only takes effect with `MS_BIND` / `MS_PRIVATE` / `MS_SLAVE` / `MS_SHARED` /
+///   `MS_UNBINDABLE` / `MS_MOVE`; on a fresh mount it is a silent no-op. `MS_REC | MS_BIND` on a
+///   non-directory `source` produces a silent partial bind; unlike [`prepare_bind`], this does no
+///   directory check on `source`.
+/// - overlay-in-userns is kernel-config-dependent and may fail `EPERM`/`EINVAL`.
+///
+/// `flags` is raw `libc::c_ulong` (callers pass `libc::MS_*` constants directly); this makes
+/// `libc` a direct call-site dependency, intentional for the escape hatch.
+///
+/// # Mountpoint
+///
+/// The target is **not** created — unlike [`prepare_tmpfs`], which `create_dir_all`s it. The
+/// caller ensures the mountpoint exists; `mount(2)` returns `ENOENT` otherwise. For a dir-target
+/// recipe, call `std::fs::create_dir_all(target)` first; a file bind target must already exist as
+/// a file.
+///
+/// Rejects an embedded NUL in `source`/`target`/`fstype`/`data`.
+pub fn prepare_mount(
+    source: Option<&str>,
+    target: &Path,
+    fstype: &str,
+    flags: libc::c_ulong,
+    data: Option<&str>,
+) -> Result<PreparedMount> {
+    let source_c = match source {
+        Some(s) => Some(cstring_or_nul(s, "source")?),
+        None => None,
+    };
+    let target_c = CString::new(target.as_os_str().as_bytes()).map_err(|_| {
+        SandboxError::new(
+            ErrorKind::Mount,
+            format!("mount target path has an embedded NUL: {}", target.display()),
+        )
+    })?;
+    let fstype_c = cstring_or_nul(fstype, "fstype")?;
+    let data_c = match data {
+        Some(s) => Some(cstring_or_nul(s, "data")?),
+        None => None,
+    };
+    Ok(PreparedMount {
+        source: source_c,
+        target: target_c,
+        fstype: fstype_c,
+        data: data_c,
+        flags,
+    })
+}
+
+/// Build a `CString` from `s`, mapping an embedded NUL to a `Mount`-kinded error naming `field`.
+fn cstring_or_nul(s: &str, field: &str) -> Result<CString> {
+    CString::new(s).map_err(|_| {
+        SandboxError::new(
+            ErrorKind::Mount,
+            format!("mount {field} has an embedded NUL"),
+        )
+    })
+}
+
+/// Child-side (`pre_exec`): issue the prepared raw `mount(2)`. Async-signal-safe on the success
+/// path (single raw syscall over pre-built `CString`s). Returns `Err` to abort the exec — the
+/// fail-closed gate.
+///
+/// See [`prepare_mount`] for the escape-hatch contract and the [module docs](self) for
+/// composition order (there is no universal slot — it depends on fstype/intent).
+pub fn install_mount(prepared: &PreparedMount) -> Result<()> {
+    // SAFETY: success path issues a single raw `mount` syscall; `source`/`target`/`fstype`/`data`
+    // are pre-built CStrings (or absent) and `flags` is plain data. No allocation, no locks.
+    unsafe {
+        let source = prepared
+            .source
+            .as_ref()
+            .map_or(std::ptr::null(), |s| s.as_ptr());
+        let target = prepared.target.as_ptr();
+        let fstype = prepared.fstype.as_ptr();
+        let data = prepared
+            .data
+            .as_ref()
+            .map_or(std::ptr::null(), |d| d.as_ptr());
+        if libc::mount(
+            source as *const libc::c_char,
+            target as *const libc::c_char,
+            fstype as *const libc::c_char,
+            prepared.flags,
+            data as *const libc::c_void,
+        ) != 0
+        {
+            return Err(mount_err("mount (escape hatch)"));
         }
     }
     Ok(())
@@ -730,6 +890,167 @@ mod tests {
         // lives only in the child's mount-ns (the daemon keeps the secret; the agent
         // cannot see it). That is the intended hide-hole semantics, so we do NOT assert
         // on `key_path.exists()` here (it is true in the parent by design).
+    }
+
+    /// Escape hatch, null source: `prepare_mount(None, ..., "tmpfs", MS_RDONLY|..., Some("size=0"))`
+    /// reproduces the curated tmpfs hide-hole via the generic path, pinning the null-source,
+    /// raw-flag, and data-`CString` plumbing of `install_mount`. Same hide semantics and positive
+    /// control as the curated `tmpfs_overlay_hides_directory_contents` test.
+    #[test]
+    fn generic_mount_tmpfs_hides_contents() {
+        if userns_unavailable() {
+            eprintln!("skipped: unprivileged user namespaces are disabled");
+            return;
+        }
+        let Some(base) = non_baseline_parent() else {
+            return;
+        };
+
+        let parent = unique_dir(&base, "genmntparent");
+        let secret = unique_dir(&parent, "secret");
+        let sibling = unique_dir(&parent, "sibling");
+        std::fs::write(secret.join("key"), b"topsecret").unwrap();
+
+        let ns = prepare_user_mount_ns(unsafe { libc::getuid() }, unsafe { libc::getgid() });
+        let hide = prepare_mount(
+            None,
+            &secret,
+            "tmpfs",
+            libc::MS_RDONLY | libc::MS_NODEV | libc::MS_NOSUID | libc::MS_NOEXEC,
+            Some("size=0"),
+        )
+        .expect("prepare_mount succeeds");
+
+        let key_path = secret.join("key");
+        let sib_target = sibling.join("f");
+        let script = format!(
+            "cat '{}' >/dev/null 2>&1; echo \"key_rc=$?\"; \
+             echo \"entries=$(ls -A '{}' 2>/dev/null | wc -l)\"; \
+             echo x > '{}'; echo \"sib_rc=$?\"",
+            key_path.display(),
+            secret.display(),
+            sib_target.display(),
+        );
+
+        let ns_for_child = ns.clone();
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&script);
+        // SAFETY: install_user_mount_ns / install_mount issue only raw syscalls on their success
+        // paths; the prepared data is parent-built.
+        unsafe {
+            cmd.pre_exec(move || {
+                install_user_mount_ns(&ns_for_child).map_err(io_err)?;
+                install_mount(&hide).map_err(io_err)?;
+                Ok(())
+            });
+        }
+        let stdout = stdout_of(&cmd.output().expect("spawn + wait should succeed"));
+
+        assert!(
+            !stdout.contains("key_rc=0"),
+            "the secret file was readable under the generic tmpfs mount; stdout={stdout}"
+        );
+        assert!(
+            stdout.contains("entries=0"),
+            "the overlaid dir was not empty (real contents leaked through); stdout={stdout}"
+        );
+        assert!(
+            stdout.contains("sib_rc=0"),
+            "sibling write failed unexpectedly (bash may not have run under the new namespaces); \
+             stdout={stdout}"
+        );
+    }
+
+    /// Escape hatch, source + raw `MS_BIND`: bind `src` onto `target` so `target/f` shows `src`'s
+    /// contents. Proves the `source` arg and the raw-flag path end-to-end (the case the curated
+    /// `MountFlags` vocabulary cannot express via `install_mount`). A writable sibling is the
+    /// positive control.
+    #[test]
+    fn generic_mount_bind_overlays_source() {
+        if userns_unavailable() {
+            eprintln!("skipped: unprivileged user namespaces are disabled");
+            return;
+        }
+        let Some(base) = non_baseline_parent() else {
+            return;
+        };
+
+        let parent = unique_dir(&base, "bindparent");
+        let src = unique_dir(&parent, "src");
+        let target = unique_dir(&parent, "target");
+        let sibling = unique_dir(&parent, "sibling");
+        std::fs::write(src.join("f"), b"fromsrc").unwrap();
+
+        let ns = prepare_user_mount_ns(unsafe { libc::getuid() }, unsafe { libc::getgid() });
+        let bind = prepare_mount(Some(src.to_str().unwrap()), &target, "", libc::MS_BIND, None)
+            .expect("prepare_mount succeeds");
+
+        let target_f = target.join("f");
+        let sib_target = sibling.join("f");
+        let script = format!(
+            "got=$(cat '{}' 2>/dev/null); echo \"cat_rc=$?\"; echo \"got=$got\"; \
+             echo x > '{}'; echo \"sib_rc=$?\"",
+            target_f.display(),
+            sib_target.display(),
+        );
+
+        let ns_for_child = ns.clone();
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&script);
+        // SAFETY: install_user_mount_ns / install_mount issue only raw syscalls on their success
+        // paths; the prepared data is parent-built.
+        unsafe {
+            cmd.pre_exec(move || {
+                install_user_mount_ns(&ns_for_child).map_err(io_err)?;
+                install_mount(&bind).map_err(io_err)?;
+                Ok(())
+            });
+        }
+        let stdout = stdout_of(&cmd.output().expect("spawn + wait should succeed"));
+
+        // The bind succeeded and carried src's content: target/f is readable and shows "fromsrc".
+        // (target/f does not exist on the parent disk — only via the bind in the child's mount-ns.)
+        assert!(
+            stdout.contains("cat_rc=0"),
+            "target/f was not readable via the bind (source did not come through); stdout={stdout}"
+        );
+        assert!(
+            stdout.contains("got=fromsrc"),
+            "target/f did not show the source's contents; stdout={stdout}"
+        );
+        assert!(
+            stdout.contains("sib_rc=0"),
+            "sibling write failed unexpectedly (bash may not have run under the new namespaces); \
+             stdout={stdout}"
+        );
+        // Disk-state control: `target/f` exists only via the child's bind, not on the parent disk
+        // (only `src/f` was created there). Pins the premise that the content came through the bind.
+        assert!(
+            !target_f.exists(),
+            "target/f exists on the parent disk (the bind test's premise is broken)"
+        );
+    }
+
+    /// `PreparedMount::Debug` redacts `source`/`data` (they may carry log-sensitive data) and
+    /// shows `target`/`fstype`/`flags`. Pins the redaction so a future `#[derive(Debug)]` does not
+    /// silently undo it.
+    #[test]
+    fn prepared_mount_debug_redacts_source_and_data() {
+        let prepared = prepare_mount(
+            Some("SECRET_SOURCE"),
+            std::path::Path::new("/tmp/target"),
+            "tmpfs",
+            libc::MS_RDONLY,
+            Some("SECRET_DATA"),
+        )
+        .expect("prepare_mount succeeds");
+        let dbg = format!("{prepared:?}");
+        assert!(
+            !dbg.contains("SECRET_SOURCE") && !dbg.contains("SECRET_DATA"),
+            "Debug leaked redacted fields: {dbg}"
+        );
+        assert!(dbg.contains("/tmp/target"), "Debug should show target: {dbg}");
+        assert!(dbg.contains("tmpfs"), "Debug should show fstype: {dbg}");
     }
 
     /// Calling `install_user_mount_ns` twice must not silently succeed and run the child program:
