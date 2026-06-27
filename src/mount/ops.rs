@@ -12,8 +12,10 @@ use std::path::{Path, PathBuf};
 /// remount that applies permission flags after a bind mount.
 ///
 /// This is the boundary where the config-owned `MountFlags` (no `nix` dep)
-/// meets the kernel-binding layer.
-fn mount_flags_to_ms(flags: crate::config::MountFlags) -> nix::mount::MsFlags {
+/// meets the kernel-binding layer. Shared by `bind_mount`/`install_bind`
+/// (remount flags) and `prepare_tmpfs` (a fresh tmpfs's mount flags), so the
+/// `MountFlags` → `MsFlags` mapping stays in one place.
+pub(crate) fn mount_flags_to_ms(flags: crate::config::MountFlags) -> nix::mount::MsFlags {
     use nix::mount::MsFlags;
     let mut out = MsFlags::empty();
     if flags.contains(crate::config::MountFlags::READ_ONLY) {

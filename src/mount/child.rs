@@ -18,12 +18,16 @@
 //! When composed with landlock and seccomp, the required order is
 //!
 //! ```text
-//! install_user_mount_ns → install_bind (×N) → landlock → seccomp
+//! install_user_mount_ns → install_bind (×N) → install_tmpfs (×N) → landlock → seccomp
 //! ```
 //!
 //! - `install_bind` runs **after** `install_user_mount_ns` (the self-bind + remount needs
 //!   `CAP_SYS_ADMIN` inside the new user namespace).
-//! - landlock runs after the binds so it resolves paths against the post-remount view.
+//! - `install_tmpfs` overlays run after the binds and before landlock: the overlay must sit
+//!   atop any bind at a disjoint path, and landlock resolves path-beneath rules against the
+//!   post-overlay view. A tmpfs at a path wins over a bind at the same path by mount-stacking
+//!   order, so keep overlay and bind paths prefix-disjoint.
+//! - landlock runs after the binds/overlays so it resolves paths against the post-mount view.
 //! - seccomp is installed **last**: the profile must permit `unshare`/`mount`/`open`/`write`/
 //!   `close` during the earlier steps, so it cannot filter them before they run.
 //! - when layering multiple binds, install writable children **before** their read-only
@@ -250,6 +254,101 @@ pub fn install_bind(prepared: &PreparedBind) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// tmpfs overlay (hide a directory's real contents)
+// ---------------------------------------------------------------------------
+
+/// Parent-side-prepared tmpfs mount: a fresh tmpfs mounted at `target` with the given
+/// [`MountFlags`](crate::config::MountFlags) and `size`. The primary use is an overlay that
+/// hides a directory's real contents (a read-only empty tmpfs over `~/.ssh`, etc.), but this is
+/// the general "mount a tmpfs" capability — a sized writable scratch tmpfs is the same call
+/// with different flags. The target `CString`, the `size={size}` data string, and `flags` are
+/// carried pre-built so the child issues only a raw `mount`.
+///
+/// Built by [`prepare_tmpfs`]; the child consumes it via [`install_tmpfs`].
+#[derive(Debug, Clone)]
+pub struct PreparedTmpfs {
+    target: CString,
+    data: CString,
+    flags: crate::config::MountFlags,
+}
+
+/// Parent-side: build the target + `size` data `CString`s, ensure the mountpoint exists, and
+/// carry `flags` as-is for the child. May allocate and stat; the child only issues a raw
+/// `mount` over the prepared data.
+///
+/// `size` is the tmpfs byte limit, passed through to the kernel as `size=<n>`. **`size = 0` is
+/// not a zero-byte tmpfs** — the kernel treats it as the default (roughly half of physical
+/// RAM). For a read-only hide-hole overlay the value is irrelevant (nothing writes), so `0` is
+/// the idiomatic choice; a writable scratch tmpfs should set an explicit limit.
+///
+/// `flags` selects the mount's restrictions — typically `MountFlags::READ_ONLY | NO_EXEC |
+/// NO_SUID | NO_DEV` for a secret hide-hole (empty, read-only, no device/exec/suid). It is
+/// converted in the child via the same `MountFlags → MsFlags` mapping `bind_mount` uses, so no
+/// third flag type is introduced. `MS_BIND`/`MS_REMOUNT` are intentionally NOT added — this is
+/// a fresh tmpfs mount, not a bind remount.
+///
+/// Rejects an embedded NUL in the target path (a dropped overlay would silently leave the real
+/// contents visible). `create_dir_all` is idempotent: a no-op when the target already exists,
+/// and creates an empty mountpoint when it doesn't (`mount(2)` requires the mountpoint to
+/// exist).
+pub fn prepare_tmpfs(
+    target: &Path,
+    size: u64,
+    flags: crate::config::MountFlags,
+) -> Result<PreparedTmpfs> {
+    // The mountpoint must exist for `mount(2)`.
+    std::fs::create_dir_all(target)?;
+    let target_c = CString::new(target.as_os_str().as_bytes()).map_err(|_| {
+        SandboxError::new(
+            ErrorKind::Mount,
+            format!("tmpfs target path has an embedded NUL: {}", target.display()),
+        )
+    })?;
+    let data = CString::new(format!("size={size}")).expect("a formatted u64 cannot contain a NUL");
+    Ok(PreparedTmpfs {
+        target: target_c,
+        data,
+        flags,
+    })
+}
+
+/// Child-side (`pre_exec`): mount a fresh tmpfs at `target`. When the target held real contents,
+/// the empty tmpfs overlays (hides) them. The `flags` (e.g. `MS_RDONLY|MS_NODEV|MS_NOSUID|
+/// MS_NOEXEC`) and `size` were prepared parent-side.
+///
+/// Returns `Err` to abort the exec on failure — the fail-closed gate.
+///
+/// # Preconditions
+///
+/// Must run **after** [`install_user_mount_ns`] — mounting tmpfs needs `CAP_SYS_ADMIN` in the
+/// new userns. When composed with binds, install tmpfs overlays **after** the binds and
+/// **before** landlock (see the [module docs](self) for the full composition order and the
+/// async-signal-safety contract).
+pub fn install_tmpfs(prepared: &PreparedTmpfs) -> Result<()> {
+    // SAFETY: success path issues a single raw `mount` syscall; `target`/`data` are pre-built
+    // CStrings and `flags` is plain data converted via integer-only bitops. No allocation, no
+    // locks.
+    unsafe {
+        let target = prepared.target.as_ptr();
+        let data = prepared.data.as_ptr();
+        // `mount_flags_to_ms` is integer-only (async-signal-safe); convert at the syscall
+        // boundary rather than storing raw libc bits in `PreparedTmpfs`.
+        let flags = ops::mount_flags_to_ms(prepared.flags).bits();
+        if libc::mount(
+            std::ptr::null(),
+            target as *const libc::c_char,
+            c"tmpfs".as_ptr() as *const libc::c_char,
+            flags,
+            data as *const libc::c_void,
+        ) != 0
+        {
+            return Err(mount_err("mount tmpfs overlay"));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
@@ -362,7 +461,11 @@ mod tests {
     /// in order inside `pre_exec`. The prepared values are moved into the closure (they are
     /// `Send + 'static`); `output()` blocks until the child exits, so the borrow outlives the
     /// spawn.
-    fn run_in_ns(ns: PreparedUserMountNs, binds: Vec<PreparedBind>, script: &str) -> std::process::Output {
+    fn run_in_ns(
+        ns: PreparedUserMountNs,
+        binds: Vec<PreparedBind>,
+        script: &str,
+    ) -> std::process::Output {
         let mut cmd = Command::new("bash");
         cmd.arg("-c").arg(script);
         // SAFETY: `install_user_mount_ns` / `install_bind` issue only raw syscalls on their
@@ -406,12 +509,10 @@ mod tests {
             unsafe { libc::getuid() },
             unsafe { libc::getgid() },
         );
-        let binds = vec![prepare_bind(
-            &hole,
-            Permission::ReadOnly,
-            RemountRecursion::NonRecursive,
-        )
-        .expect("prepare_bind succeeds")];
+        let binds = vec![
+            prepare_bind(&hole, Permission::ReadOnly, RemountRecursion::NonRecursive)
+                .expect("prepare_bind succeeds"),
+        ];
 
         let hole_target = hole.join("f");
         let sib_target = sibling.join("f");
@@ -458,10 +559,7 @@ mod tests {
         let ro = unique_dir(&parent, "ro");
         let rw = unique_dir(&parent, "rw");
 
-        let ns = prepare_user_mount_ns(
-            unsafe { libc::getuid() },
-            unsafe { libc::getgid() },
-        );
+        let ns = prepare_user_mount_ns(unsafe { libc::getuid() }, unsafe { libc::getgid() });
         // ReadWrite carries no remount (the `remount_flags` short-circuit); recursion is a no-op.
         let binds = vec![
             prepare_bind(&ro, Permission::ReadOnly, RemountRecursion::NonRecursive).unwrap(),
@@ -487,7 +585,10 @@ mod tests {
             stdout.contains("rw_rc=0"),
             "read-write bind write unexpectedly failed; stdout={stdout}"
         );
-        assert!(rw_target.exists(), "the read-write bind did not create a file");
+        assert!(
+            rw_target.exists(),
+            "the read-write bind did not create a file"
+        );
     }
 
     /// The composition that was impossible before the refactor: a read-only ancestor with a
@@ -508,15 +609,22 @@ mod tests {
         let ancestor = unique_dir(&base, "ancestor");
         let child = unique_dir(&ancestor, "child"); // nested under the ancestor
 
-        let ns = prepare_user_mount_ns(
-            unsafe { libc::getuid() },
-            unsafe { libc::getgid() },
-        );
+        let ns = prepare_user_mount_ns(unsafe { libc::getuid() }, unsafe { libc::getgid() });
         // Order matters: writable child first, then the read-only ancestor with a non-recursive
         // remount so the child mount (nested under the ancestor) keeps its writability.
         let binds = vec![
-            prepare_bind(&child, Permission::ReadWrite, RemountRecursion::NonRecursive).unwrap(),
-            prepare_bind(&ancestor, Permission::ReadOnly, RemountRecursion::NonRecursive).unwrap(),
+            prepare_bind(
+                &child,
+                Permission::ReadWrite,
+                RemountRecursion::NonRecursive,
+            )
+            .unwrap(),
+            prepare_bind(
+                &ancestor,
+                Permission::ReadOnly,
+                RemountRecursion::NonRecursive,
+            )
+            .unwrap(),
         ];
 
         let ancestor_target = ancestor.join("f");
@@ -546,6 +654,82 @@ mod tests {
             !ancestor_target.exists(),
             "the read-only ancestor write nonetheless created a file"
         );
+    }
+
+    /// A tmpfs overlay (hide-hole) mounted over a directory hides its real contents:
+    /// the planted secret file is invisible under the empty tmpfs, and the overlay is
+    /// read-only. A writable sibling is the positive control proving bash ran under
+    /// the new namespaces (without it, a silent unshare/exec failure would pass the
+    /// assertion vacuously).
+    #[test]
+    fn tmpfs_overlay_hides_directory_contents() {
+        use crate::config::MountFlags;
+
+        if userns_unavailable() {
+            eprintln!("skipped: unprivileged user namespaces are disabled");
+            return;
+        }
+        let Some(base) = non_baseline_parent() else {
+            return;
+        };
+
+        let parent = unique_dir(&base, "tmpparent");
+        let secret = unique_dir(&parent, "secret");
+        let sibling = unique_dir(&parent, "sibling");
+        // Plant a real secret file under the soon-to-be-hidden dir.
+        std::fs::write(secret.join("key"), b"topsecret").unwrap();
+
+        let ns = prepare_user_mount_ns(unsafe { libc::getuid() }, unsafe { libc::getgid() });
+        let hide = prepare_tmpfs(
+            &secret,
+            0,
+            MountFlags::READ_ONLY | MountFlags::NO_EXEC | MountFlags::NO_SUID | MountFlags::NO_DEV,
+        )
+        .expect("prepare_tmpfs succeeds");
+
+        let key_path = secret.join("key");
+        let sib_target = sibling.join("f");
+        let script = format!(
+            "cat '{}' >/dev/null 2>&1; echo \"key_rc=$?\"; \
+         echo \"entries=$(ls -A '{}' 2>/dev/null | wc -l)\"; \
+         echo x > '{}'; echo \"sib_rc=$?\"",
+            key_path.display(),
+            secret.display(),
+            sib_target.display(),
+        );
+
+        let ns_for_child = ns.clone();
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&script);
+        // SAFETY: install_user_mount_ns / install_tmpfs issue only raw syscalls on
+        // their success paths; the prepared data is parent-built.
+        unsafe {
+            cmd.pre_exec(move || {
+                install_user_mount_ns(&ns_for_child).map_err(io_err)?;
+                install_tmpfs(&hide).map_err(io_err)?;
+                Ok(())
+            });
+        }
+        let stdout = stdout_of(&cmd.output().expect("spawn + wait should succeed"));
+
+        assert!(
+            !stdout.contains("key_rc=0"),
+            "the secret file was readable under the tmpfs overlay (overlay did not hide it); \
+         stdout={stdout}"
+        );
+        assert!(
+            stdout.contains("entries=0"),
+            "the overlaid dir was not empty (real contents leaked through); stdout={stdout}"
+        );
+        assert!(
+            stdout.contains("sib_rc=0"),
+            "sibling write failed unexpectedly (bash may not have run under the new namespaces); \
+         stdout={stdout}"
+        );
+        // The real `secret/key` still exists on the parent's disk — the tmpfs overlay
+        // lives only in the child's mount-ns (the daemon keeps the secret; the agent
+        // cannot see it). That is the intended hide-hole semantics, so we do NOT assert
+        // on `key_path.exists()` here (it is true in the parent by design).
     }
 
     /// Calling `install_user_mount_ns` twice must not silently succeed and run the child program:

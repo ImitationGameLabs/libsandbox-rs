@@ -107,8 +107,8 @@ pub use landlock::{
 // caller-driven `pre_exec`.
 #[cfg(target_os = "linux")]
 pub use mount::child::{
-    install_bind, install_user_mount_ns, prepare_bind, prepare_user_mount_ns, PreparedBind,
-    PreparedUserMountNs, RemountRecursion,
+    install_bind, install_tmpfs, install_user_mount_ns, prepare_bind, prepare_tmpfs,
+    prepare_user_mount_ns, PreparedBind, PreparedTmpfs, PreparedUserMountNs, RemountRecursion,
 };
 
 /// 1 KB in bytes
