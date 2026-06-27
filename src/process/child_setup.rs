@@ -32,6 +32,7 @@ use std::os::unix::io::RawFd;
 use std::path::PathBuf;
 
 use super::fd::{close_raw, read_raw, write_all_raw};
+use crate::mount::ops::{setup_bind_mounts, setup_mount_namespace};
 
 /// Caller-supplied child setup hook.
 ///
@@ -246,11 +247,24 @@ pub fn exec_sandboxed(payload: &ChildPayload) -> isize {
         let _ = close_raw(fd);
     }
 
-    // New process group with this process as leader (used by the kill fallback).
+    // New process group with this process as leader, used by the parent's
+    // process-group kill fallback (`kill(-pid)` in `wait::kill_child`).
+    //
+    // Ordering invariant: `setpgid` runs *before* the ready-pipe block below.
+    // Until it takes effect, no process group has pgid == child_pid, so a
+    // parent timeout-kill's `kill(-child_pid)` returns ESRCH (a harmless no-op,
+    // not friendly fire); once it takes effect it targets the child's group.
+    // The direct `kill(pid)` always backstops the group kill. Moving `setpgid`
+    // after the ready-pipe block would not close any window — the parent can
+    // time out during dup2/mount/exec too — so the placement is arbitrary and
+    // kept early.
+    //
+    // The only theoretical wrong-target is `child_pid` coinciding with an
+    // unrelated pre-existing process group's pgid; that risk is inherent to
+    // steady-state `kill(-pid)` semantics, not introduced by this ordering.
+    //
     // SAFETY: setpgid(0,0) moves the caller into a new PGID; no pointers.
-    unsafe {
-        libc::setpgid(0, 0);
-    }
+    let _ = unsafe { libc::setpgid(0, 0) };
 
     // Block until the parent has written uid/gid maps and attached the cgroup.
     let mut buf = [0u8; 1];
@@ -363,7 +377,3 @@ pub fn exec_sandboxed(payload: &ChildPayload) -> isize {
     let _ = execvpe(&payload.argv[0], &payload.argv, &payload.envp);
     127
 }
-
-// Imported for the no-rootfs mount path; kept here to localize the child's
-// mount dependencies.
-use crate::mount::ops::{setup_bind_mounts, setup_mount_namespace};

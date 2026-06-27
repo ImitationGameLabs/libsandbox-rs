@@ -183,5 +183,44 @@ impl From<std::ffi::NulError> for SandboxError {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Canonical per-kind constructors (anti-double-prefix policy)
+// ---------------------------------------------------------------------------
+//
+// [`SandboxError`]'s `Display` renders `"{kind}: {context}"`, where the leading
+// kind word comes from [`ErrorKind::Display`]. A context string that *also*
+// starts with that word produces self-repeating messages like
+// `resource: resource limit ...`. The helpers below are the canonical shapes
+// for the two kinds whose construction proliferated across the crate; their
+// context templates deliberately omit the kind word.
+//
+// Not every per-kind constructor lives here: `mount_err` (`mount/holes.rs`)
+// and `ll_error` (`landlock/mod.rs`) are deliberately kept local — they flatten
+// a *foreign* error type's `Display` (errno / landlock-crate error), which is a
+// module-local concern, not the crate-wide double-prefix policy this family
+// addresses. Don't migrate them here.
+
+/// [`ErrorKind::Resource`] with a non-self-repeating context.
+///
+/// Renders as `resource: limit '<limit>' cannot be enforced: <reason>`. The
+/// leading "resource" comes from [`ErrorKind::Display`], so the context must
+/// not repeat it. Used for both controller-unavailable and enforcement-write
+/// failures — the `reason` argument carries that distinction.
+pub(crate) fn resource(limit: &'static str, reason: impl std::fmt::Display) -> SandboxError {
+    SandboxError::new(
+        ErrorKind::Resource,
+        format!("limit '{limit}' cannot be enforced: {reason}"),
+    )
+}
+
+/// [`ErrorKind::Config`] with a non-self-repeating context.
+///
+/// Renders as `config: <msg>`. The leading "config" comes from
+/// [`ErrorKind::Display`], so `msg` must not start with "configuration error:"
+/// or similar — pass the bare message.
+pub(crate) fn config(msg: impl Into<Box<str>>) -> SandboxError {
+    SandboxError::new(ErrorKind::Config, msg)
+}
+
 /// Result type alias for libsandbox operations.
 pub type Result<T> = std::result::Result<T, SandboxError>;

@@ -184,13 +184,9 @@ impl SandboxBuilder {
             && !nix::unistd::geteuid().is_root()
             && !support.can_enforce(CgroupController::Memory)
         {
-            return Err(SandboxError::new(
-                ErrorKind::Resource,
-                format!(
-                    "resource limit '{}' cannot be enforced: {}",
-                    "memory",
-                    support.unavailable_reason(Some(CgroupController::Memory))
-                ),
+            return Err(crate::error::resource(
+                "memory",
+                support.unavailable_reason(Some(CgroupController::Memory)),
             ));
         }
 
@@ -220,13 +216,9 @@ impl SandboxBuilder {
                     continue;
                 }
                 if !support.can_enforce(controller) {
-                    return Err(SandboxError::new(
-                        ErrorKind::Resource,
-                        format!(
-                            "resource limit '{}' cannot be enforced: {}",
-                            name,
-                            support.unavailable_reason(Some(controller))
-                        ),
+                    return Err(crate::error::resource(
+                        name,
+                        support.unavailable_reason(Some(controller)),
                     ));
                 }
             }
@@ -235,7 +227,9 @@ impl SandboxBuilder {
         // Check user namespace support.
         if let Ok(content) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
             if content.trim() == "0" {
-                return Err(SandboxError::new(ErrorKind::Config, format!("configuration error: {}", "Unprivileged user namespaces disabled. Run: sudo sysctl kernel.unprivileged_userns_clone=1")));
+                return Err(crate::error::config(
+                    "Unprivileged user namespaces disabled. Run: sudo sysctl kernel.unprivileged_userns_clone=1",
+                ));
             }
         }
 

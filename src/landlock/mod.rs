@@ -314,7 +314,7 @@ pub(crate) fn ensure_supported() -> Result<()> {
         Ok(()) => Ok(()),
         Err(msg) => Err(SandboxError::new(
             ErrorKind::Landlock,
-            format!("landlock unavailable: {msg}"),
+            format!("unavailable: {msg}"),
         )),
     }
 }

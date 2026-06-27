@@ -82,6 +82,9 @@ pub(crate) fn kill_tree(root_pid: i32) {
         for pid in &live {
             kill_pid(*pid);
         }
+        // Mirrors `CgroupManager::kill_all`'s cadence — deliberately distinct
+        // from `wait::REAP_POLL_INTERVAL` (a coincidental same value used for
+        // poll granularity, not iterated-kill spacing).
         std::thread::sleep(Duration::from_millis(10));
     }
 }

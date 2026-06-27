@@ -80,6 +80,44 @@ pub(crate) fn derive_clone_flags(
     flags
 }
 
+/// Per-command inputs for the two-step spawn API
+/// ([`prepare_sandbox`] → [`run_prepared`]).
+///
+/// Bundles the command, its stdio, and an optional child-setup hook. In typical
+/// use you do not construct this directly — [`SpawnBuilder::start`](crate::sandbox::SpawnBuilder)
+/// and [`Sandbox::spawn`](crate::sandbox::Sandbox::spawn) build one for you. It
+/// is exposed so callers that drive `prepare_sandbox` directly can name the
+/// argument type. Fields are public so the struct can be built by literal; the
+/// owned `Stdio`/`ChildSetup` fields are moved into the resulting
+/// [`PreparedSandbox`], so the request is single-use.
+pub struct SpawnRequest<'a> {
+    /// Target command (`argv[0]`).
+    pub cmd: &'a str,
+    /// Arguments following the command.
+    pub args: &'a [&'a str],
+    /// Child stdin disposition.
+    pub stdin: Stdio,
+    /// Child stdout disposition.
+    pub stdout: Stdio,
+    /// Child stderr disposition.
+    pub stderr: Stdio,
+    /// Optional child-setup hook run before `exec`.
+    pub child_setup: Option<ChildSetup>,
+}
+
+impl std::fmt::Debug for SpawnRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpawnRequest")
+            .field("cmd", &self.cmd)
+            .field("args", &self.args)
+            .field("stdin", &self.stdin)
+            .field("stdout", &self.stdout)
+            .field("stderr", &self.stderr)
+            // `child_setup` is an opaque closure; redacted.
+            .finish_non_exhaustive()
+    }
+}
+
 /// A fully-resolved, ready-to-run sandbox description.
 ///
 /// Built by [`prepare_sandbox`] and consumed by [`run_prepared`]. Holds no
@@ -109,17 +147,20 @@ pub struct PreparedSandbox {
 /// Compiles the seccomp filter, derives clone flags, builds argv, and freezes
 /// the child setup hook. The returned [`PreparedSandbox`] is opaque; pass it
 /// to [`run_prepared`].
-#[allow(clippy::too_many_arguments)]
 pub fn prepare_sandbox(
     config: &SandboxConfig,
     policy: &ExecutionPolicy,
-    cmd: &str,
-    args: &[&str],
-    stdin: Stdio,
-    stdout: Stdio,
-    stderr: Stdio,
-    child_setup: Option<ChildSetup>,
+    req: SpawnRequest<'_>,
 ) -> Result<PreparedSandbox> {
+    let SpawnRequest {
+        cmd,
+        args,
+        stdin,
+        stdout,
+        stderr,
+        child_setup,
+    } = req;
+
     let net_isolated = matches!(config.network.mode, NetworkMode::None);
     let clone_flags = derive_clone_flags(&config.namespace, net_isolated);
 
@@ -289,14 +330,22 @@ pub fn run_prepared(mut prep: PreparedSandbox) -> Result<(Child, LimitDiagnostic
     .map_err(|e| SandboxError::new(ErrorKind::Exec, format!("clone sandboxed process: {e}")))?;
 
     // 7. Parent: close the child-side fds.
+    //
+    // `ready_read` is the parent's copy of the ready-pipe read end. The child
+    // holds its own copy in an independent fd table (`clone` without
+    // `CLONE_FILES`), so closing here does not affect the child's still-pending
+    // ready-byte read, and the parent never reads this end again. A close
+    // failure is therefore parent-local and harmless — tolerate it best-effort
+    // rather than aborting startup, mirroring the stdio close below.
+    // (`AutoCloseFd::close` on a valid fd practically never fails.)
     let mut ready_write = ready_write;
-    ready_read.close().map_err(|e| {
-        abort_child_startup(
-            child_pid,
-            &mut ready_write,
-            format!("close sync pipe read end in parent: {e}"),
-        )
-    })?;
+    if let Err(e) = ready_read.close() {
+        tracing::warn!("close sync pipe read end in parent failed: {e}");
+    }
+    // `error_write`, by contrast, is load-bearing: it is the second write end
+    // of the error pipe, and its closure is what produces the EOF that
+    // terminates the blocking drain at step 10. A leaked fd would hang
+    // `spawn`/`run` forever, so a close failure here must still abort.
     let mut error_write_owned = error_write;
     error_write_owned.close().map_err(|e| {
         abort_child_startup(

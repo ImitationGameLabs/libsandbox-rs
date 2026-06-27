@@ -20,7 +20,7 @@ pub use child_setup::{
     install_rlimits, install_seccomp, prepare_rlimits, prepare_seccomp, ChildCtx, ChildPayload,
     ChildSetup, PreparedRlimits,
 };
-pub use protocol::{prepare_sandbox, run_prepared, PreparedSandbox};
+pub use protocol::{prepare_sandbox, run_prepared, PreparedSandbox, SpawnRequest};
 
 // Crate-internal re-exports
 pub(crate) use spawn::{run, spawn};

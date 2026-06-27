@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::builder::SandboxConfig;
 use crate::config::{ExecutionPolicy, ResourceEnforcement};
-use crate::error::{ErrorKind, Result, SandboxError};
+use crate::error::Result;
 use crate::result::{LimitDiagnostics, LimitStatus, MetricDiagnostics, MetricStatus};
 
 use super::{probe_cgroup_support, CgroupController, CgroupManager};
@@ -120,23 +120,15 @@ pub(crate) fn configure_cgroup(
 
     if !support.mounted || !support.accessible {
         if require_rootless_memory {
-            return Err(SandboxError::new(
-                ErrorKind::Resource,
-                format!(
-                    "resource limit '{}' cannot be enforced: {}",
-                    "memory",
-                    support.unavailable_reason(Some(CgroupController::Memory))
-                ),
+            return Err(crate::error::resource(
+                "memory",
+                support.unavailable_reason(Some(CgroupController::Memory)),
             ));
         }
         if let Some((limit, controller)) = limit_plan.first_strict_limit() {
-            return Err(SandboxError::new(
-                ErrorKind::Resource,
-                format!(
-                    "resource limit '{}' cannot be enforced: {}",
-                    limit,
-                    support.unavailable_reason(Some(controller))
-                ),
+            return Err(crate::error::resource(
+                limit,
+                support.unavailable_reason(Some(controller)),
             ));
         }
 
@@ -150,19 +142,10 @@ pub(crate) fn configure_cgroup(
         Err(e) => {
             let reason = format!("failed to create cgroup: {e}");
             if require_rootless_memory {
-                return Err(SandboxError::new(
-                    ErrorKind::Resource,
-                    format!(
-                        "resource limit '{}' cannot be enforced: {}",
-                        "memory", reason
-                    ),
-                ));
+                return Err(crate::error::resource("memory", &reason));
             }
             if let Some((limit, _)) = limit_plan.first_strict_limit() {
-                return Err(SandboxError::new(
-                    ErrorKind::Resource,
-                    format!("resource limit '{}' cannot be enforced: {}", limit, reason),
-                ));
+                return Err(crate::error::resource(limit, &reason));
             }
 
             set_best_effort_unavailable(&mut diagnostics, *limit_plan, &reason);
@@ -179,10 +162,7 @@ pub(crate) fn configure_cgroup(
             Ok(()) => memory_configured = true,
             Err(e) => {
                 if require_rootless_memory {
-                    return Err(SandboxError::new(
-                        ErrorKind::Resource,
-                        format!("resource limit '{}' cannot be enforced: {}", "memory", e),
-                    ));
+                    return Err(crate::error::resource("memory", e));
                 }
                 handle_limit_error(
                     &mut diagnostics.memory,
@@ -219,20 +199,11 @@ pub(crate) fn configure_cgroup(
         let reason = format!("failed to add process to cgroup: {e}");
         if require_rootless_memory {
             cg.cleanup();
-            return Err(SandboxError::new(
-                ErrorKind::Resource,
-                format!(
-                    "resource limit '{}' cannot be enforced: {}",
-                    "memory", reason
-                ),
-            ));
+            return Err(crate::error::resource("memory", &reason));
         }
         if let Some((limit, _)) = limit_plan.first_strict_limit() {
             cg.cleanup();
-            return Err(SandboxError::new(
-                ErrorKind::Resource,
-                format!("resource limit '{}' cannot be enforced: {}", limit, reason),
-            ));
+            return Err(crate::error::resource(limit, &reason));
         }
 
         if memory_configured {
@@ -285,10 +256,7 @@ fn handle_limit_error(
     reason: String,
 ) -> Result<()> {
     match mode {
-        EnforcementMode::Strict => Err(SandboxError::new(
-            ErrorKind::Resource,
-            format!("resource limit '{}' cannot be enforced: {}", limit, reason),
-        )),
+        EnforcementMode::Strict => Err(crate::error::resource(limit, &reason)),
         EnforcementMode::BestEffort => {
             *status = LimitStatus::NotEnforced { reason };
             Ok(())

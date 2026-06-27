@@ -13,6 +13,16 @@ use std::os::fd::AsFd;
 use std::os::unix::io::AsRawFd;
 use std::time::{Duration, Instant};
 
+/// Busy-wait reap granularity: short enough to bound timeout overshoot, long
+/// enough to avoid sub-millisecond scheduler wakeups.
+const REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Post-SIGKILL grace window before declaring the child unkillable (D-state).
+const POST_KILL_GRACE: Duration = Duration::from_secs(5);
+/// Async path: cap the reap poll immediately after a timeout-kill.
+const POST_KILL_REAP_CAP: Duration = Duration::from_millis(100);
+/// Async path: bounded sleep when no timeout is set (no pidfd wait source).
+const TIMEOUTLESS_SLEEP_CAP: Duration = Duration::from_secs(60);
+
 /// Non-blocking reap: `waitpid(WNOHANG)`. Returns `Some((exit_code, signal))`
 /// if the child has exited, else `None`.
 fn try_reap(pid: nix::unistd::Pid) -> Result<Option<(i32, Option<i32>)>> {
@@ -106,7 +116,8 @@ fn read_available(fd: Option<&std::os::fd::OwnedFd>, buf: &mut Vec<u8>) {
 /// stderr from pipe fds.
 ///
 /// Returns `(stdout, stderr, exit_code, killed_by_timeout, signal)`. Polls
-/// every 10 ms — for async callers prefer [`wait_with_timeout_async`].
+/// every [`REAP_POLL_INTERVAL`] — for async callers prefer
+/// [`wait_with_timeout_async`].
 pub(crate) fn wait_with_timeout(
     pid: nix::unistd::Pid,
     stdout_fd: Option<std::os::fd::OwnedFd>,
@@ -138,15 +149,17 @@ pub(crate) fn wait_with_timeout(
 
         // Give up if the child is unkillable (e.g. stuck in D-state).
         if let Some(kt) = kill_time {
-            if kt.elapsed() > Duration::from_secs(5) {
+            if kt.elapsed() > POST_KILL_GRACE {
                 return Err(SandboxError::new(
                     ErrorKind::Exec,
-                    "child unkillable after SIGKILL (5s post-kill timeout expired)",
+                    format!(
+                        "child unkillable after SIGKILL ({POST_KILL_GRACE:?} post-kill timeout expired)"
+                    ),
                 ));
             }
         }
 
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(REAP_POLL_INTERVAL);
     }
 }
 
@@ -210,10 +223,12 @@ pub(crate) async fn wait_with_timeout_async(
             }
         }
         if let Some(kt) = kill_time {
-            if kt.elapsed() > Duration::from_secs(5) {
+            if kt.elapsed() > POST_KILL_GRACE {
                 return Err(SandboxError::new(
                     ErrorKind::Exec,
-                    "child unkillable after SIGKILL (5s post-kill timeout expired)",
+                    format!(
+                        "child unkillable after SIGKILL ({POST_KILL_GRACE:?} post-kill timeout expired)"
+                    ),
                 ));
             }
         }
@@ -221,14 +236,14 @@ pub(crate) async fn wait_with_timeout_async(
         // Wait for exit (pidfd readable) or a bounded sleep that lets us
         // re-check the deadline / drain pipes.
         let cap = if killed_by_timeout {
-            Duration::from_millis(100)
+            POST_KILL_REAP_CAP
         } else {
             deadline
                 .and_then(|dl| dl.checked_duration_since(Instant::now()))
                 // No real deadline (timeoutless wait): a long-but-bounded sleep.
                 // The pidfd still interrupts on exit; this only bounds the
-                // no-pidfd polling fallback (clamped to 10ms below).
-                .unwrap_or(Duration::from_secs(60))
+                // no-pidfd polling fallback (clamped to REAP_POLL_INTERVAL below).
+                .unwrap_or(TIMEOUTLESS_SLEEP_CAP)
         };
         if let Some(ad) = pidfd.as_ref() {
             tokio::select! {
@@ -239,7 +254,7 @@ pub(crate) async fn wait_with_timeout_async(
             }
         } else {
             // No pidfd: fall back to short polling.
-            tokio::time::sleep(cap.min(Duration::from_millis(10))).await;
+            tokio::time::sleep(cap.min(REAP_POLL_INTERVAL)).await;
         }
     }
 }

@@ -130,7 +130,7 @@ impl CgroupManager {
             Err(SandboxError::new(
                 ErrorKind::Cgroup,
                 format!(
-                    "cgroup controller '{}' not available. Available: {}",
+                    "controller '{}' not available. Available: {}",
                     controller.as_str(),
                     available
                 ),

@@ -98,8 +98,14 @@ pub(super) fn compile_bpf(
 
     // Validate BPF program length (kernel limit: 4096 instructions).
     if prog.len() > libc::BPF_MAXINSNS as usize {
-        return Err(SandboxError::new(ErrorKind::Seccomp, format!("seccomp filter build failed: BPF program too large: {} instructions (kernel limit: {})", prog.len(),
-            libc::BPF_MAXINSNS)));
+        return Err(SandboxError::new(
+            ErrorKind::Seccomp,
+            format!(
+                "filter build failed: BPF program too large: {} instructions (kernel limit: {})",
+                prog.len(),
+                libc::BPF_MAXINSNS
+            ),
+        ));
     }
 
     Ok(prog)
@@ -240,8 +246,7 @@ fn patch_jump_node(
         return Err(SandboxError::new(
             ErrorKind::Seccomp,
             format!(
-                "seccomp filter build failed: BPF jump offset overflow: {jt} > 255 ({} rules) — \
-             reduce the number of syscall rules",
+                "filter build failed: BPF jump offset overflow: {jt} > 255 ({} rules) — reduce the number of syscall rules",
                 rules.len()
             ),
         ));

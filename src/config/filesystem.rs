@@ -1,6 +1,6 @@
 //! Filesystem configuration and builder.
 
-use crate::error::{ErrorKind, Result, SandboxError};
+use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -252,13 +252,10 @@ impl FilesystemBuilder {
         // Structural validation: tmpfs size must be > 0
         for (path, size) in &self.config.tmpfs_mounts {
             if *size == 0 {
-                return Err(SandboxError::new(
-                    ErrorKind::Config,
-                    format!(
-                        "configuration error: tmpfs size for {} must be greater than 0",
-                        path.display()
-                    ),
-                ));
+                return Err(crate::error::config(format!(
+                    "tmpfs size for {} must be greater than 0",
+                    path.display()
+                )));
             }
         }
         Ok(self.config)

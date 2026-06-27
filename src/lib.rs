@@ -86,7 +86,7 @@ pub use mount::{DynamicMount, MountHandle};
 pub use process::{
     install_rlimits, install_seccomp, prepare_rlimits, prepare_sandbox, prepare_seccomp,
     run_prepared, Child, ChildCtx, ChildPayload, ChildSetup, ExitStatus, PreparedRlimits,
-    PreparedSandbox,
+    PreparedSandbox, SpawnRequest,
 };
 pub use result::{
     ExecutionDiagnostics, ExecutionReport, ExecutionResult, LimitDiagnostics, LimitStatus,

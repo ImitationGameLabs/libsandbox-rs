@@ -161,6 +161,8 @@ pub(super) fn kill_and_reap(child_pid: nix::unistd::Pid) {
             Ok(nix::sys::wait::WaitStatus::Exited(_, _))
             | Ok(nix::sys::wait::WaitStatus::Signaled(_, _, _)) => break,
             Ok(nix::sys::wait::WaitStatus::StillAlive) => {
+                // Matches wait.rs::REAP_POLL_INTERVAL; not unified to avoid a
+                // shared const module for a single literal.
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             _ => break,

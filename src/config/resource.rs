@@ -1,6 +1,6 @@
 //! Resource limit configuration and builder.
 
-use crate::error::{ErrorKind, Result, SandboxError};
+use crate::error::Result;
 use std::time::Duration;
 
 /// How strictly Linux cgroup-backed resource limits should be enforced.
@@ -180,67 +180,37 @@ impl ResourceBuilder {
         // Structural validation
         if let Some(limit) = self.config.memory_limit {
             if limit == 0 {
-                return Err(SandboxError::new(
-                    ErrorKind::Config,
-                    format!(
-                        "configuration error: {}",
-                        "memory_limit must be greater than 0",
-                    ),
-                ));
+                return Err(crate::error::config("memory_limit must be greater than 0"));
             }
         }
         if let Some(limit) = self.config.cpu_limit {
             if limit <= 0.0 {
-                return Err(SandboxError::new(
-                    ErrorKind::Config,
-                    format!(
-                        "configuration error: {}",
-                        "cpu_limit must be greater than 0",
-                    ),
-                ));
+                return Err(crate::error::config("cpu_limit must be greater than 0"));
             }
         }
         if let Some(limit) = self.config.wall_time_limit {
             if limit.is_zero() {
-                return Err(SandboxError::new(
-                    ErrorKind::Config,
-                    format!(
-                        "configuration error: {}",
-                        "wall_time_limit must be greater than 0",
-                    ),
+                return Err(crate::error::config(
+                    "wall_time_limit must be greater than 0",
                 ));
             }
         }
         if let Some(limit) = self.config.cpu_time_limit {
             if limit.is_zero() {
-                return Err(SandboxError::new(
-                    ErrorKind::Config,
-                    format!(
-                        "configuration error: {}",
-                        "cpu_time_limit must be greater than 0",
-                    ),
+                return Err(crate::error::config(
+                    "cpu_time_limit must be greater than 0",
                 ));
             }
         }
         if let Some(limit) = self.config.max_file_size {
             if limit == 0 {
-                return Err(SandboxError::new(
-                    ErrorKind::Config,
-                    format!(
-                        "configuration error: {}",
-                        "max_file_size must be greater than 0",
-                    ),
-                ));
+                return Err(crate::error::config("max_file_size must be greater than 0"));
             }
         }
         if let Some(limit) = self.config.max_open_files {
             if limit == 0 {
-                return Err(SandboxError::new(
-                    ErrorKind::Config,
-                    format!(
-                        "configuration error: {}",
-                        "max_open_files must be greater than 0",
-                    ),
+                return Err(crate::error::config(
+                    "max_open_files must be greater than 0",
                 ));
             }
         }

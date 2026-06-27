@@ -232,10 +232,7 @@ impl SeccompFilterBuilder {
         {
             return Err(SandboxError::new(
                 ErrorKind::Seccomp,
-                format!(
-                    "seccomp filter build failed: {}",
-                    "exit and exit_group must remain callable",
-                ),
+                "filter build failed: exit and exit_group must remain callable",
             ));
         }
 

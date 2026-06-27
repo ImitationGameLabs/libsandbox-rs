@@ -108,12 +108,14 @@ impl Sandbox {
         process::spawn(
             &self.config,
             &self.execution_policy,
-            cmd,
-            args,
-            Stdio::default_stdin(),
-            Stdio::default_stdout(),
-            Stdio::default_stderr(),
-            None,
+            process::SpawnRequest {
+                cmd,
+                args,
+                stdin: Stdio::default_stdin(),
+                stdout: Stdio::default_stdout(),
+                stderr: Stdio::default_stderr(),
+                child_setup: None,
+            },
         )
     }
 
@@ -211,12 +213,14 @@ impl SpawnBuilder {
         process::spawn(
             &self.config,
             &self.policy,
-            &self.command,
-            &args,
-            self.stdin,
-            self.stdout,
-            self.stderr,
-            self.child_setup,
+            process::SpawnRequest {
+                cmd: &self.command,
+                args: &args,
+                stdin: self.stdin,
+                stdout: self.stdout,
+                stderr: self.stderr,
+                child_setup: self.child_setup,
+            },
         )
     }
 }

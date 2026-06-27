@@ -134,7 +134,7 @@ pub(crate) fn mount_tmpfs(target: &Path, size: u64) -> Result<()> {
     .map_err(|e| {
         SandboxError::new(
             ErrorKind::Mount,
-            format!("mount tmpfs at {} (size={}): {e}", target.display(), size),
+            format!("tmpfs at {} (size={}): {e}", target.display(), size),
         )
     })?;
 
@@ -157,7 +157,7 @@ pub(crate) fn remount_procfs(target: &Path) -> Result<()> {
     .map_err(|e| {
         SandboxError::new(
             ErrorKind::Mount,
-            format!("mount procfs at {}: {e}", target.display()),
+            format!("procfs at {}: {e}", target.display()),
         )
     })?;
 

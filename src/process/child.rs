@@ -137,7 +137,12 @@ impl Child {
         proxy: Option<ProxiedNetwork>,
         ns_fds: NamespaceFds,
     ) -> Self {
-        assert!(pid > 0, "Child::new called with invalid pid: {pid}");
+        // Invariant: `pid` is the parent-side return of a successful `clone(2)`,
+        // guaranteed positive by the sole caller (`run_prepared`). A bogus pid
+        // would surface as `waitpid`/`kill` ESRCH/EINVAL errors, not UB (the
+        // pidfd path uses an independently opened fd, not this raw pid), so a
+        // release-panic is too heavy — guard in debug only.
+        debug_assert!(pid > 0, "Child::new called with invalid pid: {pid}");
         Self {
             pid,
             pidfd,
@@ -515,6 +520,8 @@ impl Drop for Child {
                         break;
                     }
                     Ok(nix::sys::wait::WaitStatus::StillAlive) => {
+                        // Matches wait.rs::REAP_POLL_INTERVAL; not unified to
+                        // avoid a shared const module for a single literal.
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     _ => break,

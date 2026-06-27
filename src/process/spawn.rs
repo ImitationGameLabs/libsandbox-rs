@@ -9,9 +9,8 @@
 //! entry point can reuse it without duplicating the logic.
 
 use super::child::Child;
-use super::child_setup::ChildSetup;
 use super::fd::write_all_raw;
-use super::protocol::{prepare_sandbox, run_prepared};
+use super::protocol::{prepare_sandbox, run_prepared, SpawnRequest};
 use super::wait::wait_with_timeout;
 use crate::builder::SandboxConfig;
 use crate::cgroup::collect_linux_metrics;
@@ -23,29 +22,14 @@ use std::os::unix::io::AsRawFd;
 use std::time::{Duration, Instant};
 
 /// Spawn a sandboxed child process with arbitrary stdio and an optional
-/// [`ChildSetup`] hook. Does **not** wait — that is the caller's responsibility
-/// (see [`Child::wait`](super::child::Child::wait)).
-#[allow(clippy::too_many_arguments)]
+/// [`ChildSetup`](crate::process::ChildSetup) hook. Does **not** wait — that is
+/// the caller's responsibility (see [`Child::wait`](super::child::Child::wait)).
 pub(crate) fn spawn(
     config: &SandboxConfig,
     policy: &ExecutionPolicy,
-    cmd: &str,
-    args: &[&str],
-    stdin: Stdio,
-    stdout: Stdio,
-    stderr: Stdio,
-    child_setup: Option<ChildSetup>,
+    req: SpawnRequest<'_>,
 ) -> Result<Child> {
-    let prep = prepare_sandbox(
-        config,
-        policy,
-        cmd,
-        args,
-        stdin,
-        stdout,
-        stderr,
-        child_setup,
-    )?;
+    let prep = prepare_sandbox(config, policy, req)?;
     let (child, _limit_diagnostics) = run_prepared(prep)?;
     Ok(child)
 }
@@ -70,12 +54,14 @@ pub(crate) fn run(
     let prep = prepare_sandbox(
         config,
         policy,
-        cmd,
-        args,
-        stdin_stdio,
-        Stdio::Pipe,
-        Stdio::Pipe,
-        None,
+        SpawnRequest {
+            cmd,
+            args,
+            stdin: stdin_stdio,
+            stdout: Stdio::Pipe,
+            stderr: Stdio::Pipe,
+            child_setup: None,
+        },
     )?;
     let (mut child, limit_diagnostics) = run_prepared(prep)?;
 
