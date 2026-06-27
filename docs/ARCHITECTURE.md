@@ -194,7 +194,7 @@ Key methods on `Child`:
 | `stdin_fd()` / `stdout_fd()` / `stderr_fd()`                | Parent-end pipe fds                           |
 | `cgroup()`                                                  | Access the cgroup for metric collection       |
 | `mount_handle()`                                            | Obtain a `MountHandle` for dynamic mounts     |
-| `kill()`                                                    | SIGKILL via pidfd (or process group fallback) |
+| `kill()`                                                    | Best-effort SIGKILL: cgroup `kill_all`, else `kill_tree`, else pidfd |
 | `try_wait()`                                                | Non-blocking exit check                       |
 | `wait(self)`                                                | Blocking wait; consumes the child             |
 | `detach(self)`                                              | Release ownership without killing             |

@@ -266,12 +266,19 @@ impl Child {
     /// 3. A final `pidfd_send_signal` on the root pidfd (PID-recycling-safe).
     ///
     /// For untrusted workloads, prefer a cgroup-backed sandbox.
-    pub fn kill(&self) -> Result<()> {
+    ///
+    /// This is **best-effort and infallible by design**: each layer swallows
+    /// its own errors — a descendant we cannot signal must not abort the rest
+    /// of the sweep, and the [`Drop`] path that calls this cannot react to a
+    /// failure anyway. The rare non-`ESRCH` errno from the final pidfd signal
+    /// (e.g. `EBADF`, indicating a real bug) is emitted via `tracing::warn!`
+    /// rather than propagated.
+    pub fn kill(&self) {
         if let Some(cg) = self.cgroup.as_ref() {
             // Strongest: cgroup membership catches all descendants regardless
             // of setpgid.
             cg.kill_all();
-            return Ok(());
+            return;
         }
 
         // No cgroup: walk the descendant tree to catch setpgid-escaped
@@ -283,7 +290,7 @@ impl Child {
             use std::os::fd::AsRawFd;
             let raw_pidfd = pidfd.as_raw_fd();
             // SAFETY: pidfd_send_signal on a valid pidfd with null siginfo.
-            let _ = unsafe {
+            let ret = unsafe {
                 libc::syscall(
                     libc::SYS_pidfd_send_signal,
                     raw_pidfd as libc::c_int,
@@ -292,9 +299,20 @@ impl Child {
                     0u32,
                 )
             };
+            // ESRCH = already dead, expected. Anything else (e.g. EBADF) is a
+            // real anomaly worth surfacing in the log; we still cannot act on
+            // it, so the contract stays infallible.
+            if ret < 0 {
+                let errno = nix::errno::Errno::last();
+                if errno != nix::errno::Errno::ESRCH {
+                    tracing::warn!(
+                        "libsandbox: pidfd_send_signal(SIGKILL) on child pid {} \
+                         failed ({errno}); the process may not have been killed",
+                        self.pid
+                    );
+                }
+            }
         }
-
-        Ok(())
     }
 
     /// Non-blocking check for child exit.
@@ -474,7 +492,7 @@ impl Drop for Child {
     fn drop(&mut self) {
         if !self.waited {
             // Kill and reap to prevent zombie processes.
-            let _ = self.kill();
+            self.kill();
             let pid = nix::unistd::Pid::from_raw(self.pid);
 
             // Poll for up to 1 second (100 iterations × 10 ms). Most
