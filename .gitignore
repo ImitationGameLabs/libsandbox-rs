@@ -86,3 +86,9 @@ htmlcov/
 
 # For local drafts
 /.draft/
+
+# Nix
+/result
+
+# direnv
+/.direnv/
