@@ -3,9 +3,13 @@ name = "libsandbox"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Linux-first sandbox runtime for interactive agent sessions"
+description = "Linux-only sandbox primitives library for interactive agent sessions"
+repository = "https://github.com/ImitationGameLabs/libsandbox-rs"
+homepage = "https://github.com/ImitationGameLabs/libsandbox-rs"
+documentation = "https://docs.rs/libsandbox"
+readme = "README.md"
 keywords = ["sandbox", "linux", "agent", "security", "seccomp"]
-categories = ["os::linux-apis", "development-tools"]
+categories = ["os::linux-apis", "security", "virtualization", "development-tools"]
 rust-version = "1.78"
 autobenches = false
 
