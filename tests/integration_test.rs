@@ -12,10 +12,10 @@ use std::time::Duration;
 
 #[test]
 fn test_platform_supported() {
-    assert!(libsandbox::is_platform_supported());
-    let name = libsandbox::platform_name();
-    assert!(!name.is_empty());
-    println!("Running on platform: {}", name);
+    // The crate is Linux-only (compile_error gates other platforms), so the
+    // platform-name accessor was removed as dead weight. The userns probe
+    // remains the meaningful platform-capability check.
+    assert!(libsandbox::is_supported());
 }
 
 #[test]
@@ -39,8 +39,8 @@ fn test_simple_command() {
         "Command failed: {:?}",
         result.failure_reason()
     );
-    assert_eq!(result.stdout.trim(), "hello world");
-    assert!(result.stderr.is_empty() || result.stderr.trim().is_empty());
+    assert_eq!(result.stdout_lossy().trim(), "hello world");
+    assert!(result.stderr.is_empty() || result.stderr_lossy().trim().is_empty());
 }
 
 #[test]
@@ -56,11 +56,13 @@ fn test_command_with_stdin() {
         .expect("Failed to build sandbox");
 
     let result = sandbox
-        .run_with_input("cat", &[], Some(b"test input"))
+        .run_cmd("cat", &[])
+        .stdin(Some(b"test input"))
+        .run()
         .expect("Failed to run command");
 
     assert!(result.success());
-    assert_eq!(result.stdout.trim(), "test input");
+    assert_eq!(result.stdout_lossy().trim(), "test input");
 }
 
 #[test]
@@ -81,7 +83,7 @@ fn test_exit_code() {
         .expect("Failed to run command");
 
     assert!(!result.success());
-    assert_eq!(result.exit_code, 42);
+    assert_eq!(result.status.code(), 42);
 }
 
 #[test]
@@ -101,7 +103,7 @@ fn test_stderr() {
         .expect("Failed to run command");
 
     assert!(result.success());
-    assert!(result.stderr.contains("error"));
+    assert!(result.stderr_lossy().contains("error"));
 }
 
 #[test]
@@ -156,8 +158,8 @@ fn test_environment_variables() {
         .expect("Failed to run command");
 
     assert!(result.success());
-    assert!(result.stdout.contains("my_value"));
-    assert!(result.stdout.contains("123"));
+    assert!(result.stdout_lossy().contains("my_value"));
+    assert!(result.stdout_lossy().contains("123"));
 }
 
 #[test]
@@ -177,12 +179,12 @@ fn test_python_execution() {
 
     match result {
         Ok(r) => {
-            if r.exit_code == 127 {
+            if r.status.code() == 127 {
                 eprintln!("warning: skipping python execution test because python3 is unavailable");
                 return;
             }
             if r.success() {
-                assert_eq!(r.stdout.trim(), "Hello from Python");
+                assert_eq!(r.stdout_lossy().trim(), "Hello from Python");
             } else {
                 // Python might not be installed
                 eprintln!(
@@ -265,7 +267,7 @@ fn test_composed_config_e2e() {
         .run("sh", &["-c", "echo composed-config-ran"])
         .expect("run should succeed");
     assert!(result.success(), "expected success, got: {result:?}");
-    assert_eq!(result.stdout.trim(), "composed-config-ran");
+    assert_eq!(result.stdout_lossy().trim(), "composed-config-ran");
 }
 
 // ========== Network Proxy Tests ==========
@@ -323,7 +325,7 @@ fn test_sandbox_with_proxied_network() {
         .expect("Failed to run command");
 
     assert!(result.success());
-    assert_eq!(result.stdout.trim(), "proxy test");
+    assert_eq!(result.stdout_lossy().trim(), "proxy test");
 }
 
 #[test]
@@ -348,8 +350,8 @@ fn test_proxy_env_vars_in_sandbox() {
     assert!(result.success());
     // The proxy URL should be set
     assert!(
-        result.stdout.contains("127.0.0.1"),
+        result.stdout_lossy().contains("127.0.0.1"),
         "HTTP_PROXY should be set: {}",
-        result.stdout
+        result.stdout_lossy()
     );
 }

@@ -15,12 +15,12 @@ pub(crate) mod spawn;
 pub(crate) mod wait;
 
 // Public re-exports
-pub use child::{Child, ExitStatus};
+pub use child::{Child, ChildOutput, DetachedChild, ExitStatus};
 pub use child_setup::{
     install_rlimits, install_seccomp, prepare_rlimits, prepare_seccomp, ChildCtx, ChildPayload,
     ChildSetup, PreparedRlimits,
 };
-pub use protocol::{prepare_sandbox, run_prepared, PreparedSandbox, SpawnRequest};
+pub(crate) use protocol::SpawnRequest;
 
 // Crate-internal re-exports
 pub(crate) use spawn::{run, spawn};

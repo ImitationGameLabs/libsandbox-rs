@@ -107,24 +107,26 @@ print(a + b)
 
         // Run with input
         let result = sandbox
-            .run_with_input(
-                "python3",
-                &["/workspace/solution.py"],
-                Some(tc.input.as_bytes()),
-            )
+            .run_cmd("python3", &["/workspace/solution.py"])
+            .stdin(Some(tc.input.as_bytes()))
+            .run()
             .expect("Execution failed");
 
-        let output = result.stdout.trim();
+        let stdout = result.stdout_lossy();
+        let output = stdout.trim();
         let expected = tc.expected.trim();
 
         if result.killed_by_timeout {
             println!("TLE (Time Limit Exceeded)");
             println!("  Duration: {:?}", result.duration);
-        } else if result.exit_code != 0 {
+        } else if result.status.code() != 0 {
             println!("RE (Runtime Error)");
-            println!("  Exit code: {}", result.exit_code);
+            println!("  Exit code: {}", result.status.code());
             if !result.stderr.is_empty() {
-                println!("  stderr: {}", result.stderr.lines().next().unwrap_or(""));
+                println!(
+                    "  stderr: {}",
+                    result.stderr_lossy().lines().next().unwrap_or("")
+                );
             }
         } else if output != expected {
             println!("WA (Wrong Answer)");
@@ -199,11 +201,13 @@ print("42")  # Still output something
         .unwrap();
 
     let result = sandbox
-        .run_with_input("python3", &["/workspace/solution.py"], Some(b"1 41\n"))
+        .run_cmd("python3", &["/workspace/solution.py"])
+        .stdin(Some(b"1 41\n"))
+        .run()
         .unwrap();
 
-    println!("Output:\n{}", result.stdout);
-    println!("Exit code: {}", result.exit_code);
+    println!("Output:\n{}", result.stdout_lossy());
+    println!("Exit code: {}", result.status.code());
 
     // Cleanup
     std::fs::remove_dir_all(&submission_dir).ok();

@@ -57,7 +57,10 @@ pub(crate) fn permission_to_remount_flags(
 /// `MS_BIND|MS_REMOUNT` would otherwise be issued. This is the single gate shared by
 /// `bind_mount`, `dynamic_bind_mount`, and the child-side `install_bind` primitive so the three
 /// cannot drift on which permissions trigger a remount.
-pub(crate) fn remount_flags(permission: &Permission, recursive: bool) -> Option<nix::mount::MsFlags> {
+pub(crate) fn remount_flags(
+    permission: &Permission,
+    recursive: bool,
+) -> Option<nix::mount::MsFlags> {
     match permission {
         Permission::ReadWrite => None,
         Permission::Custom(flags) if *flags == MountFlags::NONE => None,
@@ -108,7 +111,14 @@ pub(crate) fn bind_mount(source: &Path, target: &Path, permission: Permission) -
 
     // Apply mount options via remount when the permission requests any flags.
     if let Some(remount_flags) = remount_flags(&permission, recursive) {
-        mount(None::<&str>, target, None::<&str>, remount_flags, None::<&str>).map_err(|e| {
+        mount(
+            None::<&str>,
+            target,
+            None::<&str>,
+            remount_flags,
+            None::<&str>,
+        )
+        .map_err(|e| {
             SandboxError::new(
                 ErrorKind::Mount,
                 format!("remount {} -> {}: {e}", source.display(), target.display()),

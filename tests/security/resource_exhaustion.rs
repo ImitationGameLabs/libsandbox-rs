@@ -82,12 +82,16 @@ fn test_memory_bomb_contained() {
 
     match result {
         Ok(r) => {
-            if r.exit_code == 127 {
+            if r.status.code() == 127 {
                 eprintln!("warning: skipping memory bomb assertion because python3 is unavailable");
                 return;
             }
             // Should be killed by OOM or memory error
-            assert!(r.killed_by_oom || r.exit_code != 0 || r.stdout.contains("memory error"));
+            assert!(
+                r.killed_by_oom
+                    || r.status.code() != 0
+                    || r.stdout_lossy().contains("memory error")
+            );
         }
         Err(_) => {
             eprintln!("warning: skipping memory bomb assertion because python3 is unavailable");
@@ -150,7 +154,7 @@ fn test_disk_bomb_contained_tmpfs() {
         .unwrap();
 
     // Should fail when tmpfs is full
-    assert!(result.exit_code != 0 || result.stderr.contains("No space"));
+    assert!(result.status.code() != 0 || result.stderr_lossy().contains("No space"));
 }
 
 /// Subprocess bomb test - Linux only (cgroups pids controller)
@@ -229,11 +233,11 @@ print(f'opened {len(fds)} fds')
         Ok(r) => {
             // Linux exec failures surface as exit 127 rather than Err(...).
             // Treat missing python3 like the other python-dependent tests do.
-            if r.exit_code == 127 {
+            if r.status.code() == 127 {
                 eprintln!("warning: skipping fd bomb assertion because python3 is unavailable");
                 return;
             }
-            assert!(r.exit_code == 0 || r.stdout.contains("fd limit"));
+            assert!(r.status.code() == 0 || r.stdout_lossy().contains("fd limit"));
         }
         Err(_) => {
             eprintln!("warning: skipping fd bomb assertion because python3 is unavailable");

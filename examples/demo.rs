@@ -20,8 +20,8 @@ fn main() {
         .expect("Failed to build sandbox");
 
     let result = sandbox.run("echo", &["Hello from sandbox"]).unwrap();
-    println!("   stdout: {}", result.stdout.trim());
-    println!("   exit_code: {}", result.exit_code);
+    println!("   stdout: {}", result.stdout_lossy().trim());
+    println!("   exit_code: {}", result.status.code());
     assert!(result.success());
 
     // 2. Timeout enforcement
@@ -70,7 +70,7 @@ fn main() {
     let result = sandbox
         .run("sh", &["-c", "echo SECRET=$SECRET VISIBLE=$VISIBLE"])
         .unwrap();
-    println!("   output: {}", result.stdout.trim());
+    println!("   output: {}", result.stdout_lossy().trim());
     // SECRET should be empty, VISIBLE should be "yes"
 
     // 4. Exit code propagation
@@ -86,19 +86,19 @@ fn main() {
         .unwrap();
 
     let result = sandbox.run("sh", &["-c", "exit 42"]).unwrap();
-    println!("   exit_code: {}", result.exit_code);
-    assert_eq!(result.exit_code, 42);
+    println!("   exit_code: {}", result.status.code());
+    assert_eq!(result.status.code(), 42);
 
     // 5. Stderr capture
     println!("\n5. Stderr capture:");
     let result = sandbox.run("sh", &["-c", "echo error >&2"]).unwrap();
-    println!("   stderr: {}", result.stderr.trim());
-    assert!(result.stderr.contains("error"));
+    println!("   stderr: {}", result.stderr_lossy().trim());
+    assert!(result.stderr_lossy().contains("error"));
 
     // 6. Python (if available)
     println!("\n6. Python execution:");
     match sandbox.run("python3", &["-c", "print(2+2)"]) {
-        Ok(r) if r.success() => println!("   2+2 = {}", r.stdout.trim()),
+        Ok(r) if r.success() => println!("   2+2 = {}", r.stdout_lossy().trim()),
         _ => println!("   (python3 not available)"),
     }
 
@@ -127,7 +127,7 @@ fn main() {
     );
     match result {
         Ok(r) => {
-            if r.exit_code != 0 || r.stdout.is_empty() {
+            if r.status.code() != 0 || r.stdout.is_empty() {
                 println!("   network blocked (curl failed)");
             } else {
                 println!("   WARNING: network NOT blocked!");

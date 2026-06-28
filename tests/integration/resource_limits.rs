@@ -97,7 +97,7 @@ fn test_memory_limit_linux() {
     // Should either fail or be killed
     match result {
         Ok(r) => {
-            if r.exit_code == 127 {
+            if r.status.code() == 127 {
                 eprintln!(
                     "warning: skipping memory limit assertion because python3 is unavailable"
                 );
@@ -146,14 +146,14 @@ fn test_memory_within_limit() {
 
     match result {
         Ok(r) => {
-            if r.exit_code == 127 {
+            if r.status.code() == 127 {
                 eprintln!(
                     "warning: skipping memory within limit assertion because python3 is unavailable"
                 );
                 return;
             }
-            if r.exit_code == 0 {
-                assert_eq!(r.stdout.trim(), "ok");
+            if r.status.code() == 0 {
+                assert_eq!(r.stdout_lossy().trim(), "ok");
             }
         }
         Err(_) => {

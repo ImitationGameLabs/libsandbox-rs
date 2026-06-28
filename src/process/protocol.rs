@@ -80,17 +80,15 @@ pub(crate) fn derive_clone_flags(
     flags
 }
 
-/// Per-command inputs for the two-step spawn API
+/// Per-command inputs for the spawn pipeline
 /// ([`prepare_sandbox`] → [`run_prepared`]).
 ///
-/// Bundles the command, its stdio, and an optional child-setup hook. In typical
-/// use you do not construct this directly — [`SpawnBuilder::start`](crate::sandbox::SpawnBuilder)
-/// and [`Sandbox::spawn`](crate::sandbox::Sandbox::spawn) build one for you. It
-/// is exposed so callers that drive `prepare_sandbox` directly can name the
-/// argument type. Fields are public so the struct can be built by literal; the
-/// owned `Stdio`/`ChildSetup` fields are moved into the resulting
+/// Bundles the command, its stdio, and an optional child-setup hook. An
+/// internal protocol type — built by [`SpawnBuilder::start`](crate::sandbox::SpawnBuilder)
+/// and [`Sandbox::spawn`](crate::sandbox::Sandbox::spawn), not by external
+/// callers. The owned `Stdio`/`ChildSetup` fields are moved into the resulting
 /// [`PreparedSandbox`], so the request is single-use.
-pub struct SpawnRequest<'a> {
+pub(crate) struct SpawnRequest<'a> {
     /// Target command (`argv[0]`).
     pub cmd: &'a str,
     /// Arguments following the command.
@@ -123,7 +121,7 @@ impl std::fmt::Debug for SpawnRequest<'_> {
 /// Built by [`prepare_sandbox`] and consumed by [`run_prepared`]. Holds no
 /// kernel resources — the ready/error pipes, the proxy runtime, and the cgroup
 /// are all created inside `run_prepared`.
-pub struct PreparedSandbox {
+pub(crate) struct PreparedSandbox {
     clone_flags: CloneFlags,
     config: SandboxConfig,
     policy: ExecutionPolicy,
@@ -147,7 +145,7 @@ pub struct PreparedSandbox {
 /// Compiles the seccomp filter, derives clone flags, builds argv, and freezes
 /// the child setup hook. The returned [`PreparedSandbox`] is opaque; pass it
 /// to [`run_prepared`].
-pub fn prepare_sandbox(
+pub(crate) fn prepare_sandbox(
     config: &SandboxConfig,
     policy: &ExecutionPolicy,
     req: SpawnRequest<'_>,
@@ -230,7 +228,7 @@ pub fn prepare_sandbox(
 /// Execute the prepared sandbox: clone the child, run the parent-side
 /// invariants, release the child, and return the [`Child`] handle plus limit
 /// diagnostics.
-pub fn run_prepared(mut prep: PreparedSandbox) -> Result<(Child, LimitDiagnostics)> {
+pub(crate) fn run_prepared(mut prep: PreparedSandbox) -> Result<(Child, LimitDiagnostics)> {
     // 1. Start the network proxy (if proxied mode). Holds a tokio runtime.
     #[cfg(feature = "tokio")]
     let proxy = match &prep.config.network.mode {

@@ -57,7 +57,8 @@ fn test_proxy_chunked_transfer() {
         )
         .unwrap();
 
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
 
     // Either chunked works or curl not available
     if !output.contains("NO_CURL") {
@@ -124,12 +125,13 @@ fn test_proxy_keepalive() {
         )
         .unwrap();
 
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
 
     if output.contains("REQUESTS_DONE") {
         // Requests completed - keep-alive would make them faster
         // For now just verify they work
-        assert!(result.exit_code == 0 || result.killed_by_timeout);
+        assert!(result.status.code() == 0 || result.killed_by_timeout);
     }
 }
 
@@ -177,7 +179,8 @@ fn test_proxy_large_response() {
         )
         .unwrap();
 
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
 
     if output.contains("LARGE_OK") {
         // Large response worked
@@ -230,7 +233,8 @@ fn test_proxy_connection_refused() {
         )
         .unwrap();
 
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
 
     // Should get a proper error, not hang
     assert!(
@@ -283,7 +287,7 @@ fn test_proxy_malformed_response() {
         .unwrap();
 
     // Should complete without crash
-    assert!(result.exit_code == 0 || result.stdout.contains("NO_CURL"));
+    assert!(result.status.code() == 0 || result.stdout_lossy().contains("NO_CURL"));
 }
 
 /// Test: Multiple proxied sandboxes should get unique ports
@@ -322,7 +326,7 @@ fn test_proxy_unique_ports() {
             )
             .unwrap();
 
-        let port = result.stdout.trim().to_string();
+        let port = result.stdout_lossy().trim().to_string();
         if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
             ports.push(port);
         }
@@ -381,7 +385,8 @@ fn test_proxy_https_connect() {
         )
         .unwrap();
 
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
 
     // HTTPS through proxy should work
     if !output.contains("NO_CURL") {
@@ -444,7 +449,8 @@ fn test_proxy_concurrent_requests() {
         )
         .unwrap();
 
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
 
     if output == "NO_CURL" {
         return; // Skip if curl not available
@@ -461,7 +467,7 @@ fn test_proxy_concurrent_requests() {
         }
         // Relaxed assertion - network tests are flaky
         assert!(
-            count >= 1 || result.exit_code == 0,
+            count >= 1 || result.status.code() == 0,
             "Concurrent proxy requests all failed: {}",
             output
         );

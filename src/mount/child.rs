@@ -310,7 +310,10 @@ pub fn prepare_tmpfs(
     let target_c = CString::new(target.as_os_str().as_bytes()).map_err(|_| {
         SandboxError::new(
             ErrorKind::Mount,
-            format!("tmpfs target path has an embedded NUL: {}", target.display()),
+            format!(
+                "tmpfs target path has an embedded NUL: {}",
+                target.display()
+            ),
         )
     })?;
     let data = CString::new(format!("size={size}")).expect("a formatted u64 cannot contain a NUL");
@@ -447,7 +450,10 @@ pub fn prepare_mount(
     let target_c = CString::new(target.as_os_str().as_bytes()).map_err(|_| {
         SandboxError::new(
             ErrorKind::Mount,
-            format!("mount target path has an embedded NUL: {}", target.display()),
+            format!(
+                "mount target path has an embedded NUL: {}",
+                target.display()
+            ),
         )
     })?;
     let fstype_c = cstring_or_nul(fstype, "fstype")?;
@@ -982,8 +988,14 @@ mod tests {
         std::fs::write(src.join("f"), b"fromsrc").unwrap();
 
         let ns = prepare_user_mount_ns(unsafe { libc::getuid() }, unsafe { libc::getgid() });
-        let bind = prepare_mount(Some(src.to_str().unwrap()), &target, "", libc::MS_BIND, None)
-            .expect("prepare_mount succeeds");
+        let bind = prepare_mount(
+            Some(src.to_str().unwrap()),
+            &target,
+            "",
+            libc::MS_BIND,
+            None,
+        )
+        .expect("prepare_mount succeeds");
 
         let target_f = target.join("f");
         let sib_target = sibling.join("f");
@@ -1049,7 +1061,10 @@ mod tests {
             !dbg.contains("SECRET_SOURCE") && !dbg.contains("SECRET_DATA"),
             "Debug leaked redacted fields: {dbg}"
         );
-        assert!(dbg.contains("/tmp/target"), "Debug should show target: {dbg}");
+        assert!(
+            dbg.contains("/tmp/target"),
+            "Debug should show target: {dbg}"
+        );
         assert!(dbg.contains("tmpfs"), "Debug should show fstype: {dbg}");
     }
 

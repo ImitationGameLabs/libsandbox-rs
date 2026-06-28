@@ -97,9 +97,11 @@ fn test_platform_identifiable() {
         .build()
         .unwrap();
 
-    let platform = sandbox.platform();
-
-    assert_eq!(platform, "linux");
+    let _ = sandbox;
+    // The crate is Linux-only (compile_error gates other platforms) and the
+    // former `platform_name()`/`Sandbox::platform()` accessors were removed as
+    // dead weight, so there is nothing to assert here — building on a
+    // non-Linux target is a compile error by construction.
 }
 
 /// Test: Exit codes should be accurately captured
@@ -121,9 +123,11 @@ fn test_exit_code_accuracy() {
             .run("sh", &["-c", &format!("exit {}", expected_code)])
             .unwrap();
         assert_eq!(
-            result.exit_code, expected_code,
+            result.status.code(),
+            expected_code,
             "Exit code mismatch: expected {}, got {}",
-            expected_code, result.exit_code
+            expected_code,
+            result.status.code()
         );
     }
 }
@@ -163,11 +167,11 @@ fn test_signal_capture() {
 
     // The child died from SIGKILL, so the signal must be captured verbatim.
     assert_eq!(
-        result.signal,
+        result.status.signal(),
         Some(9),
         "child should be killed by SIGKILL (9), got signal={:?}, exit_code={}",
-        result.signal,
-        result.exit_code,
+        result.status.signal(),
+        result.status.code(),
     );
 }
 
@@ -220,21 +224,21 @@ fn test_output_separation() {
         .unwrap();
 
     assert!(
-        result.stdout.contains("STDOUT"),
+        result.stdout_lossy().contains("STDOUT"),
         "Stdout should contain STDOUT: {}",
-        result.stdout
+        result.stdout_lossy()
     );
     assert!(
-        result.stderr.contains("STDERR"),
+        result.stderr_lossy().contains("STDERR"),
         "Stderr should contain STDERR: {}",
-        result.stderr
+        result.stderr_lossy()
     );
     assert!(
-        !result.stdout.contains("STDERR"),
+        !result.stdout_lossy().contains("STDERR"),
         "Stdout should not contain STDERR"
     );
     assert!(
-        !result.stderr.contains("STDOUT"),
+        !result.stderr_lossy().contains("STDOUT"),
         "Stderr should not contain STDOUT"
     );
 }
@@ -264,7 +268,7 @@ fn test_resource_metrics_structure() {
         Err(err) => panic!("unexpected observability sandbox build failure: {err:?}"),
     };
 
-    let report = sandbox.run_detailed("echo", &["test"]).unwrap();
+    let report = sandbox.run_cmd("echo", &["test"]).run_detailed().unwrap();
     let result = report.result;
 
     // These fields should exist (even if None currently)
@@ -337,7 +341,7 @@ fn test_independent_metrics() {
     // Each should have different durations
     for (i, result) in results.iter().enumerate() {
         assert!(
-            result.stdout.trim() == i.to_string(),
+            result.stdout_lossy().trim() == i.to_string(),
             "Output should be independent"
         );
     }
@@ -378,10 +382,10 @@ fn test_error_output_capture() {
         )
         .unwrap();
 
-    assert_eq!(result.exit_code, 1);
-    assert!(result.stderr.contains("Error line 1"));
-    assert!(result.stderr.contains("Error line 2"));
-    assert!(result.stderr.contains("Error line 3"));
+    assert_eq!(result.status.code(), 1);
+    assert!(result.stderr_lossy().contains("Error line 1"));
+    assert!(result.stderr_lossy().contains("Error line 2"));
+    assert!(result.stderr_lossy().contains("Error line 3"));
 }
 
 /// Test: Large output should be captured (within limits)
@@ -409,10 +413,10 @@ fn test_large_output_capture() {
     ]).unwrap();
 
     assert!(
-        result.exit_code == 0,
+        result.status.code() == 0,
         "Exit code should be 0, got {}. stderr: {}",
-        result.exit_code,
-        result.stderr
+        result.status.code(),
+        result.stderr_lossy()
     );
     assert!(
         result.stdout.len() > 10000,
@@ -420,11 +424,11 @@ fn test_large_output_capture() {
         result.stdout.len()
     );
     assert!(
-        result.stdout.contains("Line 1:"),
+        result.stdout_lossy().contains("Line 1:"),
         "Should contain first line"
     );
     assert!(
-        result.stdout.contains("Line 500:"),
+        result.stdout_lossy().contains("Line 500:"),
         "Should contain last line"
     );
 }
@@ -458,7 +462,7 @@ fn test_binary_output_handling() {
 
     // Should not crash, text should be present
     assert!(
-        result.stdout.contains("text after binary"),
+        result.stdout_lossy().contains("text after binary"),
         "Text after binary should be captured"
     );
 }

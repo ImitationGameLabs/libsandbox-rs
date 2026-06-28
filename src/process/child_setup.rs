@@ -60,7 +60,7 @@ use crate::mount::ops::{setup_bind_mounts, setup_mount_namespace};
 /// To report failure, return `Err(...)`; do **not** write file descriptors
 /// directly. The framework translates the error into the spawn error-pipe
 /// frame and surfaces it to the parent as a [`SandboxError`](crate::error::SandboxError)
-/// at stage [`ChildStage::Hook`].
+/// tagged at the child-hook stage.
 ///
 /// The hook **must be bounded**: `spawn()` blocks on the error pipe until the
 /// child commits (close-on-success / write-on-failure), so a hook that runs

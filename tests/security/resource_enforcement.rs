@@ -36,7 +36,8 @@ fn test_max_open_files_enforced() {
 
     // Check ulimit value
     let result = sandbox.run("sh", &["-c", "ulimit -n"]).unwrap();
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
 
     // Should show our limit
     if output != "unlimited" {
@@ -141,7 +142,7 @@ fn test_linux_oom_detection() {
 
     // Force an OOM condition
     let report = sandbox
-        .run_detailed(
+        .run_cmd(
             "sh",
             &[
                 "-c",
@@ -154,12 +155,13 @@ fn test_linux_oom_detection() {
     "#,
             ],
         )
+        .run_detailed()
         .unwrap();
     let result = report.result;
 
     // Should be killed (by OOM or timeout)
     assert!(
-        result.exit_code != 0 || result.killed_by_timeout,
+        result.status.code() != 0 || result.killed_by_timeout,
         "Process should have been killed"
     );
 
@@ -171,7 +173,8 @@ fn test_linux_oom_detection() {
         assert!(
             result.killed_by_oom,
             "OOM kill not detected. Exit code: {}, signal: {:?}",
-            result.exit_code, result.signal
+            result.status.code(),
+            result.status.signal()
         );
     }
 }
@@ -208,7 +211,7 @@ fn test_peak_memory_collection() {
 
     // Allocate known amount of memory
     let report = sandbox
-        .run_detailed(
+        .run_cmd(
             "sh",
             &[
                 "-c",
@@ -219,10 +222,11 @@ fn test_peak_memory_collection() {
     "#,
             ],
         )
+        .run_detailed()
         .unwrap();
     let result = report.result;
 
-    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.status.code(), 0);
 
     match report.diagnostics.metrics.peak_memory {
         MetricStatus::Collected => {
@@ -269,7 +273,7 @@ fn test_cpu_time_collection() {
 
     // Do some CPU work
     let report = sandbox
-        .run_detailed(
+        .run_cmd(
             "sh",
             &[
                 "-c",
@@ -283,10 +287,11 @@ fn test_cpu_time_collection() {
     "#,
             ],
         )
+        .run_detailed()
         .unwrap();
     let result = report.result;
 
-    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.status.code(), 0);
 
     match report.diagnostics.metrics.cpu_time {
         MetricStatus::Collected => {

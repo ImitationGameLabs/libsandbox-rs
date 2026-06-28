@@ -3,19 +3,25 @@
 //! This module defines the result types returned from sandbox execution.
 
 use crate::config::ExecutionPolicy;
+use crate::process::ExitStatus;
 use std::time::Duration;
 
 /// Result of executing a command in the sandbox
+///
+/// Captured stdout/stderr are raw bytes (`Vec<u8>`) so binary output
+/// round-trips without lossy UTF-8 conversion. Use [`stdout_lossy`](Self::stdout_lossy)
+/// / [`stderr_lossy`](Self::stderr_lossy) for a `String` view.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
-    /// Standard output captured from the process
-    pub stdout: String,
+    /// Standard output captured from the process (raw bytes).
+    pub stdout: Vec<u8>,
 
-    /// Standard error captured from the process
-    pub stderr: String,
+    /// Standard error captured from the process (raw bytes).
+    pub stderr: Vec<u8>,
 
-    /// Exit code of the process (0 typically means success)
-    pub exit_code: i32,
+    /// How the process exited (normal exit code or fatal signal).
+    pub status: ExitStatus,
 
     /// Wall-clock duration of execution
     pub duration: Duration,
@@ -26,14 +32,23 @@ pub struct ExecutionResult {
     /// Whether the process was killed due to out-of-memory
     pub killed_by_oom: bool,
 
-    /// Signal that killed the process, if any
-    pub signal: Option<i32>,
-
     /// Peak memory usage in bytes (if available)
     pub peak_memory: Option<u64>,
 
     /// CPU time consumed (if available)
     pub cpu_time: Option<Duration>,
+}
+
+impl ExecutionResult {
+    /// Standard output as a loss-decoded `String` (invalid UTF-8 becomes `U+FFFD`).
+    pub fn stdout_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).into_owned()
+    }
+
+    /// Standard error as a loss-decoded `String` (invalid UTF-8 becomes `U+FFFD`).
+    pub fn stderr_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.stderr).into_owned()
+    }
 }
 
 /// Detailed execution report including diagnostics.
@@ -114,13 +129,12 @@ impl ExecutionResult {
     /// Create a new ExecutionResult with default values
     pub fn new() -> Self {
         Self {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExitStatus::from_exit(0),
             duration: Duration::ZERO,
             killed_by_timeout: false,
             killed_by_oom: false,
-            signal: None,
             peak_memory: None,
             cpu_time: None,
         }
@@ -128,10 +142,7 @@ impl ExecutionResult {
 
     /// Check if execution was successful
     pub fn success(&self) -> bool {
-        self.exit_code == 0
-            && !self.killed_by_timeout
-            && !self.killed_by_oom
-            && self.signal.is_none()
+        self.status.success() && !self.killed_by_timeout && !self.killed_by_oom
     }
 
     /// Get failure reason if any
@@ -140,10 +151,10 @@ impl ExecutionResult {
             Some("Execution timed out".into())
         } else if self.killed_by_oom {
             Some("Out of memory".into())
-        } else if let Some(sig) = self.signal {
+        } else if let Some(sig) = self.status.signal() {
             Some(format!("Killed by signal {}", sig))
-        } else if self.exit_code != 0 {
-            Some(format!("Exit code {}", self.exit_code))
+        } else if self.status.code() != 0 {
+            Some(format!("Exit code {}", self.status.code()))
         } else {
             None
         }
@@ -255,13 +266,12 @@ mod tests {
     #[test]
     fn test_execution_result_success() {
         let result = ExecutionResult {
-            stdout: "hello".into(),
-            stderr: String::new(),
-            exit_code: 0,
+            stdout: b"hello".to_vec(),
+            stderr: Vec::new(),
+            status: ExitStatus::from_exit(0),
             duration: Duration::from_millis(100),
             killed_by_timeout: false,
             killed_by_oom: false,
-            signal: None,
             peak_memory: None,
             cpu_time: None,
         };
@@ -272,13 +282,12 @@ mod tests {
     #[test]
     fn test_execution_result_failure() {
         let result = ExecutionResult {
-            stdout: String::new(),
-            stderr: "error".into(),
-            exit_code: 1,
+            stdout: Vec::new(),
+            stderr: b"error".to_vec(),
+            status: ExitStatus::from_exit(1),
             duration: Duration::from_millis(100),
             killed_by_timeout: false,
             killed_by_oom: false,
-            signal: None,
             peak_memory: None,
             cpu_time: None,
         };
@@ -289,13 +298,12 @@ mod tests {
     #[test]
     fn test_execution_result_timeout() {
         let result = ExecutionResult {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: 137,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExitStatus::from_signal(9),
             duration: Duration::from_secs(5),
             killed_by_timeout: true,
             killed_by_oom: false,
-            signal: Some(9),
             peak_memory: None,
             cpu_time: None,
         };
@@ -306,13 +314,12 @@ mod tests {
     #[test]
     fn test_execution_result_oom() {
         let result = ExecutionResult {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: 137,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExitStatus::from_signal(9),
             duration: Duration::from_secs(1),
             killed_by_timeout: false,
             killed_by_oom: true,
-            signal: Some(9),
             peak_memory: Some(512 * 1024 * 1024),
             cpu_time: None,
         };
@@ -323,13 +330,12 @@ mod tests {
     #[test]
     fn test_execution_result_signal() {
         let result = ExecutionResult {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: 137,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExitStatus::from_signal(9),
             duration: Duration::from_secs(1),
             killed_by_timeout: false,
             killed_by_oom: false,
-            signal: Some(9),
             peak_memory: None,
             cpu_time: None,
         };

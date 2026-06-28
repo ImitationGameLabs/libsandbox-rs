@@ -50,24 +50,19 @@ fn main() {
         .build()
         .unwrap();
 
-    let result = sandbox
-        .run(
-            "curl",
-            &["-s", "--connect-timeout", "3", "https://httpbin.org/ip"],
-        )
-        .unwrap_or_else(|_| libsandbox::result::ExecutionResult {
-            stdout: String::new(),
-            stderr: "curl not found".into(),
-            exit_code: 1,
-            duration: Duration::ZERO,
-            killed_by_timeout: false,
-            killed_by_oom: false,
-            signal: None,
-            peak_memory: None,
-            cpu_time: None,
-        });
+    let result = sandbox.run(
+        "curl",
+        &["-s", "--connect-timeout", "3", "https://httpbin.org/ip"],
+    );
 
-    if result.exit_code != 0 || result.stdout.is_empty() {
+    // Treat an Err (curl missing / exec blocked) as a blocked outcome by
+    // defaulting to a non-zero exit code and empty stdout.
+    let (exit_code, stdout_empty) = match result {
+        Ok(r) => (r.status.code(), r.stdout.is_empty()),
+        Err(_) => (1, true),
+    };
+
+    if exit_code != 0 || stdout_empty {
         println!("   [BLOCKED] Network access denied (expected)\n");
     } else {
         println!("   [WARNING] Network access NOT blocked!\n");
@@ -103,13 +98,13 @@ fn main() {
 
     match result {
         Ok(r) if r.success() && !r.stdout.is_empty() => {
-            println!("   [ALLOWED] Response: {}", r.stdout.trim());
+            println!("   [ALLOWED] Response: {}", r.stdout_lossy().trim());
         }
         Ok(r) => {
             println!(
                 "   [BLOCKED/ERROR] exit={}, stderr={}",
-                r.exit_code,
-                r.stderr.trim()
+                r.status.code(),
+                r.stderr_lossy().trim()
             );
         }
         Err(e) => {
@@ -126,10 +121,10 @@ fn main() {
 
     match result {
         Ok(r) if r.success() && !r.stdout.is_empty() => {
-            println!("   [ALLOWED] Response: {}", r.stdout.trim());
+            println!("   [ALLOWED] Response: {}", r.stdout_lossy().trim());
         }
         Ok(r) => {
-            println!("   [BLOCKED/ERROR] exit={}", r.exit_code);
+            println!("   [BLOCKED/ERROR] exit={}", r.status.code());
         }
         Err(e) => {
             println!("   [ERROR] {}", e);
@@ -151,16 +146,19 @@ fn main() {
     );
 
     match result {
-        Ok(r) if r.stdout.contains("403") || r.stdout.contains("not in whitelist") => {
+        Ok(r)
+            if r.stdout_lossy().contains("403")
+                || r.stdout_lossy().contains("not in whitelist") =>
+        {
             println!("   [BLOCKED] Domain not in whitelist (expected)");
         }
-        Ok(r) if r.exit_code != 0 => {
+        Ok(r) if r.status.code() != 0 => {
             println!("   [BLOCKED] Request failed (expected)");
         }
         Ok(r) => {
             println!(
                 "   [?] Response: {}",
-                r.stdout.chars().take(100).collect::<String>()
+                r.stdout_lossy().chars().take(100).collect::<String>()
             );
         }
         Err(e) => {
@@ -230,7 +228,7 @@ print(f"PATH: {os.environ.get('PATH', 'not set')[:50]}...")
         .unwrap();
 
     let result = sandbox.run("python3", &["/workspace/api_demo.py"]).unwrap();
-    println!("{}", result.stdout);
+    println!("{}", result.stdout_lossy());
 
     // Cleanup
     std::fs::remove_dir_all(&workspace).ok();

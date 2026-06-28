@@ -173,13 +173,21 @@ impl StdioSlot {
             }
 
             Stdio::Owned(fd) => {
-                // Guard against accidentally passing fd 0/1/2, which would
-                // cause close_in_parent to close the parent's own std streams.
-                debug_assert!(
-                    fd.as_raw_fd() > 2,
-                    "Stdio::Owned fd should not be 0, 1, or 2 \
-                     (would close parent's standard streams)"
-                );
+                // Reject fd 0/1/2 outright: this slot is dup2'd onto the
+                // child's standard stream and the parent's copy is closed after
+                // clone(). Passing the parent's own std fd here would close the
+                // parent's standard stream — a release-mode footgun, not just a
+                // logic error, so it fails hard instead of debug-asserting.
+                let raw = fd.as_raw_fd();
+                if raw <= 2 {
+                    return Err(SandboxError::new(
+                        ErrorKind::Config,
+                        format!(
+                            "Stdio::Owned fd must not be 0, 1, or 2 \
+                             (would close the parent's own standard streams); got {raw}"
+                        ),
+                    ));
+                }
                 // into_raw_fd() consumes the OwnedFd; fd stays open.
                 // The parent closes it after clone() (the child inherits a copy).
                 let raw = fd.into_raw_fd();

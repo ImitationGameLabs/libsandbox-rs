@@ -86,6 +86,34 @@ impl std::fmt::Display for ExitStatus {
     }
 }
 
+/// Captured output of a child drained via [`Child::wait_with_output`].
+///
+/// stdout/stderr are raw bytes so binary output round-trips without lossy
+/// UTF-8 conversion. Use [`stdout_lossy`](Self::stdout_lossy) /
+/// [`stderr_lossy`](Self::stderr_lossy) for a `String` view.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub struct ChildOutput {
+    /// Standard output captured from the child (raw bytes).
+    pub stdout: Vec<u8>,
+    /// Standard error captured from the child (raw bytes).
+    pub stderr: Vec<u8>,
+    /// How the child exited.
+    pub status: ExitStatus,
+}
+
+impl ChildOutput {
+    /// Standard output as a loss-decoded `String` (invalid UTF-8 becomes `U+FFFD`).
+    pub fn stdout_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).into_owned()
+    }
+
+    /// Standard error as a loss-decoded `String` (invalid UTF-8 becomes `U+FFFD`).
+    pub fn stderr_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.stderr).into_owned()
+    }
+}
+
 /// A handle to a spawned sandboxed process.
 ///
 /// The `Child` owns all resources tied to the sandboxed process:
@@ -355,38 +383,102 @@ impl Child {
     /// This consumes the `Child`. After this call the cgroup is cleaned up
     /// and all pipe fds are closed.
     ///
-    /// # Deadlock hazard
+    /// # Pipe-buffer deadlock
     ///
     /// If stdout or stderr is configured as [`Stdio::Pipe`](crate::Stdio::Pipe)
-    /// and the child writes enough data to fill the OS pipe buffer (typically
-    /// 64 KB), the child will block on `write()` and this call will block on
-    /// `waitpid()` forever. To avoid this, call [`take_stdout_fd`](Child::take_stdout_fd)
-    /// and/or [`take_stderr_fd`](Child::take_stderr_fd) before calling `wait()`,
-    /// and drain the pipes concurrently (e.g., in a separate thread or using
-    /// non-blocking I/O between [`try_wait`](Child::try_wait) polls).
+    /// and still owned by this `Child`, calling `wait()` can deadlock: the child
+    /// blocks on `write()` once the OS pipe buffer fills (typically 64 KB), while
+    /// this call blocks on `waitpid()` forever. To prevent that, this method
+    /// returns [`ErrorKind::WouldDeadlock`](crate::ErrorKind::WouldDeadlock)
+    /// whenever an untaken piped stdout/stderr remains. Drain first — either
+    /// [`take_stdout_fd`](Child::take_stdout_fd) /
+    /// [`take_stderr_fd`](Child::take_stderr_fd) and read them concurrently, or
+    /// use [`wait_with_output`](Self::wait_with_output) which drains internally.
     pub fn wait(mut self) -> Result<ExitStatus> {
+        self.require_pipes_drained()?;
         let status = self.wait_blocking()?;
         Ok(status)
+    }
+
+    /// Block until the child exits, draining stdout/stderr into a captured
+    /// [`ChildOutput`].
+    ///
+    /// Unlike [`wait`](Self::wait), this is always safe: it reads the pipes
+    /// concurrently with reaping, so a large child output cannot deadlock. Use
+    /// this whenever the child's stdout/stderr are piped and you want them
+    /// collected.
+    pub fn wait_with_output(mut self) -> Result<ChildOutput> {
+        let pid = nix::unistd::Pid::from_raw(self.pid);
+        // Take the parent-end fds so the drain loop owns and closes them. The
+        // fields become `None`, so a subsequent Drop (or the `waited` flag set
+        // below) won't touch them.
+        let stdout_fd = self.stdio.stdout.take();
+        let stderr_fd = self.stdio.stderr.take();
+        // No timeout: loop draining + reaping until the child exits.
+        let super::wait::CollectedOutput {
+            stdout,
+            stderr,
+            exit_code: code,
+            signal,
+            killed_by_timeout: _,
+        } = super::wait::wait_with_timeout(pid, stdout_fd, stderr_fd, std::time::Duration::MAX)?;
+        self.waited = true;
+        let status = match signal {
+            Some(sig) => ExitStatus::from_signal(sig),
+            None => ExitStatus::from_exit(code),
+        };
+        Ok(ChildOutput {
+            stdout,
+            stderr,
+            status,
+        })
     }
 
     /// Asynchronously wait for the child to exit (requires the `tokio` feature).
     ///
     /// Event-driven: awaits the child's pidfd for exit rather than
     /// busy-polling, so it composes with other async work. Like [`wait`](Self::wait),
-    /// take and drain stdout/stderr fds beforehand to avoid pipe-buffer
-    /// deadlock.
+    /// this returns [`ErrorKind::WouldDeadlock`](crate::ErrorKind::WouldDeadlock)
+    /// if an untaken piped stdout/stderr remains — drain first (or use the
+    /// synchronous [`wait_with_output`](Self::wait_with_output), which drains
+    /// internally).
     #[cfg(feature = "tokio")]
     pub async fn wait_async(mut self) -> Result<ExitStatus> {
+        self.require_pipes_drained()?;
         let pid = nix::unistd::Pid::from_raw(self.pid);
         // No pipes here (caller drains them); large timeout — the pidfd fires
         // on actual exit.
-        let (_out, _err, code, _killed_by_timeout, signal) =
-            super::wait::wait_with_timeout_async(pid, None, None, std::time::Duration::MAX).await?;
+        let super::wait::CollectedOutput {
+            stdout: _,
+            stderr: _,
+            exit_code: code,
+            killed_by_timeout: _,
+            signal,
+        } = super::wait::wait_with_timeout_async(pid, None, None, std::time::Duration::MAX).await?;
         self.waited = true;
         Ok(match signal {
             Some(sig) => ExitStatus::from_signal(sig),
             None => ExitStatus::from_exit(code),
         })
+    }
+
+    /// Reject a blocking wait while untaken piped stdout/stderr remain.
+    ///
+    /// See [`wait`](Self::wait) for the deadlock rationale. `stdin` is not
+    /// guarded: an untaken stdin pipe is the caller's input-feeding concern
+    /// ([`close_stdin`](Self::close_stdin) / [`take_stdin_fd`](Self::take_stdin_fd)),
+    /// not a pipe-buffer-fill deadlock against `waitpid`.
+    fn require_pipes_drained(&self) -> Result<()> {
+        if self.stdio.stdout.is_some() || self.stdio.stderr.is_some() {
+            return Err(SandboxError::new(
+                ErrorKind::WouldDeadlock,
+                "stdout/stderr are Stdio::Pipe and still owned by this Child; \
+                 wait() would deadlock once the pipe buffer fills — use \
+                 wait_with_output(), or take_stdout_fd()/take_stderr_fd() and \
+                 drain them before waiting",
+            ));
+        }
+        Ok(())
     }
 
     /// Close the parent-end stdin fd, signalling EOF to the child.
@@ -414,36 +506,30 @@ impl Child {
 
     /// Detach from the child process without killing or reaping it.
     ///
-    /// Returns the child's PID as a `u32`. The caller assumes responsibility
-    /// for reaping the child (e.g., via `waitpid`) to prevent zombies.
-    /// After calling `detach()`, [`Drop`] will not kill or reap the child.
+    /// Moves ownership of the pidfd, cgroup, and network proxy into a
+    /// [`DetachedChild`], which does **not** kill on drop (unlike [`Child`]).
+    /// The caller drives the rest of the lifecycle: [`DetachedChild::reap`] to
+    /// wait for exit and tear down resources cleanly, or drop it to abandon
+    /// them (the cgroup directory persists, the proxy keeps running) while
+    /// reaping the pid manually.
     ///
-    /// # Resource leaks
+    /// # Why resources are abandoned on drop
     ///
-    /// Detaching intentionally leaks:
-    /// - The pidfd (if opened on Linux 5.3+) — remains open until process exit.
-    /// - The cgroup — not cleaned up; the cgroup directory remains on disk.
-    /// - The network proxy (if any) — remains running.
-    ///
-    /// This is necessary because cleanup would kill the child or tear down its
-    /// network path, violating the detach contract.
-    pub fn detach(mut self) -> u32 {
-        let pid = self.pid as u32;
+    /// [`CgroupManager`](crate::cgroup::CgroupManager)'s `Drop` SIGKILLs every
+    /// member, which would violate the detach contract; and a cgroup v2
+    /// directory cannot be removed while the detached child still occupies it.
+    /// So an abandoned [`DetachedChild`] leaks the cgroup/proxy on purpose.
+    /// [`DetachedChild::reap`] cleans them up once the child has exited.
+    pub fn detach(mut self) -> DetachedChild {
+        let pid = self.pid;
+        // Mark waited so Child::Drop won't try to kill/reap the now-detached pid.
         self.waited = true;
-        // Prevent Drop from killing/reaping — the caller takes over.
-        let _ = self.pidfd.take();
-        // Prevent CgroupManager::Drop from calling cleanup() → kill_all().
-        // Without this, the cgroup cleanup would send SIGKILL to the detached child.
-        std::mem::forget(self.cgroup.take());
-        // Prevent ProxiedNetwork::Drop from shutting down the proxy,
-        // which would kill the child's network connectivity. (Under the
-        // no-tokio config ProxiedNetwork is a Drop-less ZST, so take() is
-        // enough; the guard is only meaningful with the tokio feature.)
-        #[cfg(feature = "tokio")]
-        std::mem::forget(self._proxy.take());
-        #[cfg(not(feature = "tokio"))]
-        let _ = self._proxy.take();
-        pid
+        DetachedChild {
+            pid,
+            pidfd: self.pidfd.take(),
+            cgroup: self.cgroup.take(),
+            proxy: self._proxy.take(),
+        }
     }
 
     /// Take ownership of the stdout pipe fd.
@@ -468,28 +554,105 @@ impl Child {
     }
 
     fn wait_blocking(&mut self) -> Result<ExitStatus> {
-        let pid = nix::unistd::Pid::from_raw(self.pid);
-        let status = loop {
-            match nix::sys::wait::waitpid(pid, None) {
-                Err(nix::errno::Errno::EINTR) => continue,
-                other => break other,
-            }
-        };
-        match status {
-            Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => {
-                self.waited = true;
-                Ok(ExitStatus::from_exit(code))
-            }
-            Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => {
-                self.waited = true;
-                Ok(ExitStatus::from_signal(sig as i32))
-            }
-            Ok(other) => Err(SandboxError::new(
-                ErrorKind::Exec,
-                format!("unexpected waitpid status: {other:?}"),
-            )),
-            Err(e) => Err(SandboxError::new(ErrorKind::Exec, format!("waitpid: {e}"))),
+        let status = block_until_exit(self.pid)?;
+        self.waited = true;
+        Ok(status)
+    }
+}
+
+/// Block on `waitpid` for `pid` until the child exits, translating the status.
+fn block_until_exit(pid: i32) -> Result<ExitStatus> {
+    let pid = nix::unistd::Pid::from_raw(pid);
+    let status = loop {
+        match nix::sys::wait::waitpid(pid, None) {
+            Err(nix::errno::Errno::EINTR) => continue,
+            other => break other,
         }
+    };
+    match status {
+        Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => Ok(ExitStatus::from_exit(code)),
+        Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => {
+            Ok(ExitStatus::from_signal(sig as i32))
+        }
+        Ok(other) => Err(SandboxError::new(
+            ErrorKind::Exec,
+            format!("unexpected waitpid status: {other:?}"),
+        )),
+        Err(e) => Err(SandboxError::new(ErrorKind::Exec, format!("waitpid: {e}"))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DetachedChild — a child released from Child's kill-on-drop contract
+// ---------------------------------------------------------------------------
+
+/// A child process detached from its [`Child`] handle.
+///
+/// Returned by [`Child::detach`]. Unlike [`Child`], dropping a `DetachedChild`
+/// does **not** kill the process: the cgroup and network proxy are abandoned
+/// (the cgroup directory persists on disk, the proxy keeps running) and the
+/// caller is responsible for reaping the pid. Use [`reap`](Self::reap) to wait
+/// for exit and tear those resources down cleanly instead.
+pub struct DetachedChild {
+    pid: i32,
+    pidfd: Option<OwnedFd>,
+    cgroup: Option<CgroupManager>,
+    proxy: Option<ProxiedNetwork>,
+}
+
+impl std::fmt::Debug for DetachedChild {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DetachedChild")
+            .field("pid", &self.pid)
+            .field("pidfd", &self.pidfd.as_ref().map(|_| "some"))
+            .field("cgroup", &self.cgroup.as_ref().map(|_| "some"))
+            .field("proxy", &self.proxy.as_ref().map(|_| "some"))
+            .finish()
+    }
+}
+
+impl DetachedChild {
+    /// The PID of the detached child (in the parent's PID namespace).
+    pub fn pid(&self) -> u32 {
+        self.pid as u32
+    }
+
+    /// Block until the child exits, then tear down its cgroup and proxy.
+    ///
+    /// Once the child has been reaped the cgroup is empty (any lingering
+    /// descendants are killed by the cgroup's own cleanup) and its directory
+    /// can be removed, so this cleans up fully — unlike dropping the
+    /// [`DetachedChild`] without reaping, which abandons those resources.
+    pub fn reap(mut self) -> Result<ExitStatus> {
+        let status = block_until_exit(self.pid)?;
+        // Child is gone: clean up the cgroup/proxy normally now that the cgroup
+        // is drainable. Taking them out prevents Self::Drop's abandon path from
+        // touching them; the owned values drop here and run their own cleanup.
+        drop(self.cgroup.take());
+        // The proxy has a real Drop only with the `tokio` feature; without it
+        // `ProxiedNetwork` is a Drop-less ZST, so just clear the field.
+        #[cfg(feature = "tokio")]
+        drop(self.proxy.take());
+        #[cfg(not(feature = "tokio"))]
+        let _ = self.proxy.take();
+        Ok(status)
+    }
+}
+
+impl Drop for DetachedChild {
+    fn drop(&mut self) {
+        // Abandon the cgroup and proxy: CgroupManager::Drop would SIGKILL every
+        // member (violating the detach contract), and the cgroup v2 directory
+        // cannot be removed while the detached child still occupies it. The
+        // pidfd closes normally — that only drops this handle's reference, not
+        // the child. The caller reaps the pid themselves.
+        std::mem::forget(self.cgroup.take());
+        // Same feature split as `reap`: forget the proxy only when it has a
+        // Drop worth suppressing (tokio); otherwise clearing is enough.
+        #[cfg(feature = "tokio")]
+        std::mem::forget(self.proxy.take());
+        #[cfg(not(feature = "tokio"))]
+        let _ = self.proxy.take();
     }
 }
 

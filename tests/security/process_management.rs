@@ -94,7 +94,9 @@ fn test_process_group_killing() {
     assert!(
         result.killed_by_timeout,
         "Expected timeout, got exit_code={}, duration={:?}, stderr={}",
-        result.exit_code, result.duration, result.stderr
+        result.status.code(),
+        result.duration,
+        result.stderr_lossy()
     );
 
     // Wait a moment for process cleanup
@@ -147,9 +149,11 @@ fn test_sigterm_cleanup() {
 
     // Should complete normally
     assert_eq!(
-        result.exit_code, 0,
+        result.status.code(),
+        0,
         "Expected exit 0, got {}, stderr: {}",
-        result.exit_code, result.stderr
+        result.status.code(),
+        result.stderr_lossy()
     );
     assert!(!result.killed_by_timeout);
 }
@@ -224,7 +228,9 @@ fn test_deep_process_tree_killed() {
     assert!(
         result.killed_by_timeout,
         "Expected timeout, got exit_code={}, duration={:?}, stderr={}",
-        result.exit_code, result.duration, result.stderr
+        result.status.code(),
+        result.duration,
+        result.stderr_lossy()
     );
 
     // Verify no deep children survive

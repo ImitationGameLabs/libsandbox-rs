@@ -22,7 +22,7 @@ fn test_cannot_read_host_etc_shadow() {
     let result = sandbox.run("cat", &["/etc/shadow"]).unwrap();
 
     // Should fail or read sandbox's own file (not host)
-    assert!(result.exit_code != 0 || !result.stdout.contains("root:"));
+    assert!(result.status.code() != 0 || !result.stdout_lossy().contains("root:"));
 }
 
 /// Test PID namespace isolation
@@ -41,7 +41,7 @@ fn test_pid_namespace_isolation() {
 
     // PID 1 in sandbox should be sandbox's init, not host's systemd
     let result = sandbox.run("cat", &["/proc/1/cmdline"]).unwrap();
-    assert!(!result.stdout.contains("systemd"));
+    assert!(!result.stdout_lossy().contains("systemd"));
 }
 
 /// Test process isolation
@@ -61,7 +61,8 @@ fn test_cannot_see_host_processes() {
     let result = sandbox.run("ps", &["aux"]).unwrap();
 
     // Should only see sandbox processes (very few)
-    let lines: Vec<&str> = result.stdout.lines().collect();
+    let stdout = result.stdout_lossy();
+    let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines.len() < 15);
 }
 
@@ -88,7 +89,7 @@ fn test_cannot_mount_filesystems() {
     let result = sandbox
         .run("mount", &["-t", "tmpfs", "none", "/mnt"])
         .unwrap();
-    assert!(result.exit_code != 0);
+    assert!(result.status.code() != 0);
 }
 
 /// Test device node creation blocked
@@ -106,7 +107,7 @@ fn test_cannot_create_device_nodes() {
         .unwrap();
 
     let result = sandbox.run("mknod", &["/tmp/test", "c", "1", "3"]).unwrap();
-    assert!(result.exit_code != 0);
+    assert!(result.status.code() != 0);
 }
 
 /// Test user namespace isolation
@@ -126,7 +127,7 @@ fn test_user_namespace_isolation() {
     // Should appear as root inside sandbox
     let result = sandbox.run("id", &[]).unwrap();
     // May or may not be uid=0 depending on configuration
-    assert!(result.success() || result.exit_code != 0);
+    assert!(result.success() || result.status.code() != 0);
 }
 
 /// Test environment isolation
@@ -155,7 +156,7 @@ fn test_environment_isolation() {
 
     let result = sandbox.run("sh", &["-c", "echo $SECRET_VAR"]).unwrap();
     // Should be empty or not contain the secret
-    assert!(!result.stdout.contains("secret_value"));
+    assert!(!result.stdout_lossy().contains("secret_value"));
 
     std::env::remove_var("SECRET_VAR");
 }

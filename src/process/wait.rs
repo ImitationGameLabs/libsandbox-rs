@@ -19,9 +19,29 @@ const REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Post-SIGKILL grace window before declaring the child unkillable (D-state).
 const POST_KILL_GRACE: Duration = Duration::from_secs(5);
 /// Async path: cap the reap poll immediately after a timeout-kill.
+#[cfg(feature = "tokio")]
 const POST_KILL_REAP_CAP: Duration = Duration::from_millis(100);
 /// Async path: bounded sleep when no timeout is set (no pidfd wait source).
+#[cfg(feature = "tokio")]
 const TIMEOUTLESS_SLEEP_CAP: Duration = Duration::from_secs(60);
+
+/// What [`wait_with_timeout`] / [`wait_with_timeout_async`] collect from a child:
+/// its drained stdout/stderr (raw bytes) and how it exited.
+///
+/// A named struct rather than a positional 5-tuple so call sites destructure by
+/// field name (the tuple's element order is easy to swap by mistake).
+pub(crate) struct CollectedOutput {
+    /// Drained stdout (raw bytes — no lossy UTF-8 conversion).
+    pub(crate) stdout: Vec<u8>,
+    /// Drained stderr (raw bytes).
+    pub(crate) stderr: Vec<u8>,
+    /// Exit code (`128 + signal` for signal deaths, per shell convention).
+    pub(crate) exit_code: i32,
+    /// Whether the child was killed for exceeding the wall-clock timeout.
+    pub(crate) killed_by_timeout: bool,
+    /// The fatal signal, if the child was killed by one.
+    pub(crate) signal: Option<i32>,
+}
 
 /// Non-blocking reap: `waitpid(WNOHANG)`. Returns `Some((exit_code, signal))`
 /// if the child has exited, else `None`.
@@ -82,23 +102,6 @@ fn kill_child(pid: nix::unistd::Pid) {
     }
 }
 
-/// Pack the collected output into the result tuple.
-fn pack(
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    exit_code: i32,
-    killed_by_timeout: bool,
-    signal: Option<i32>,
-) -> (String, String, i32, bool, Option<i32>) {
-    (
-        String::from_utf8_lossy(&stdout).into_owned(),
-        String::from_utf8_lossy(&stderr).into_owned(),
-        exit_code,
-        killed_by_timeout,
-        signal,
-    )
-}
-
 /// Read whatever is currently available on a non-blocking pipe into `buf`.
 fn read_available(fd: Option<&std::os::fd::OwnedFd>, buf: &mut Vec<u8>) {
     let Some(fd) = fd else { return };
@@ -115,15 +118,15 @@ fn read_available(fd: Option<&std::os::fd::OwnedFd>, buf: &mut Vec<u8>) {
 /// Wait for a child process with a wall-clock timeout, collecting stdout and
 /// stderr from pipe fds.
 ///
-/// Returns `(stdout, stderr, exit_code, killed_by_timeout, signal)`. Polls
-/// every [`REAP_POLL_INTERVAL`] — for async callers prefer
-/// [`wait_with_timeout_async`].
+/// stdout/stderr are raw bytes — no lossy UTF-8 conversion, so binary output
+/// round-trips intact. Polls every [`REAP_POLL_INTERVAL`] — for async callers
+/// prefer [`wait_with_timeout_async`].
 pub(crate) fn wait_with_timeout(
     pid: nix::unistd::Pid,
     stdout_fd: Option<std::os::fd::OwnedFd>,
     stderr_fd: Option<std::os::fd::OwnedFd>,
     timeout: Duration,
-) -> Result<(String, String, i32, bool, Option<i32>)> {
+) -> Result<CollectedOutput> {
     set_pipes_nonblocking(&stdout_fd, &stderr_fd);
 
     let start = Instant::now();
@@ -138,7 +141,13 @@ pub(crate) fn wait_with_timeout(
 
         if let Some((code, signal)) = try_reap(pid)? {
             finalize(stdout_fd, stderr_fd, &mut stdout, &mut stderr);
-            return Ok(pack(stdout, stderr, code, killed_by_timeout, signal));
+            return Ok(CollectedOutput {
+                stdout,
+                stderr,
+                exit_code: code,
+                killed_by_timeout,
+                signal,
+            });
         }
 
         if start.elapsed() > timeout && !killed_by_timeout {
@@ -175,7 +184,7 @@ pub(crate) async fn wait_with_timeout_async(
     stdout_fd: Option<std::os::fd::OwnedFd>,
     stderr_fd: Option<std::os::fd::OwnedFd>,
     timeout: Duration,
-) -> Result<(String, String, i32, bool, Option<i32>)> {
+) -> Result<CollectedOutput> {
     use tokio::io::unix::AsyncFd;
 
     set_pipes_nonblocking(&stdout_fd, &stderr_fd);
@@ -212,9 +221,14 @@ pub(crate) async fn wait_with_timeout_async(
 
         if let Some((code, signal)) = try_reap(pid)? {
             finalize(stdout_fd, stderr_fd, &mut stdout, &mut stderr);
-            return Ok(pack(stdout, stderr, code, killed_by_timeout, signal));
+            return Ok(CollectedOutput {
+                stdout,
+                stderr,
+                exit_code: code,
+                killed_by_timeout,
+                signal,
+            });
         }
-
         if let Some(dl) = deadline {
             if Instant::now() >= dl && !killed_by_timeout {
                 kill_child(pid);

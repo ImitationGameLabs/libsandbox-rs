@@ -13,21 +13,23 @@ use crate::sandbox::Sandbox;
 /// Sandbox configuration — a composition of domain configs.
 ///
 /// Produced by [`SandboxBuilder::build()`] and consumed by the platform
-/// executor at spawn time. Users do not construct this directly.
+/// executor at spawn time. Internal: callers never construct or name this type
+/// directly — [`SandboxBuilder`] is the only construction path, and the
+/// prepared-spawn protocol that consumes it is `pub(crate)`.
 #[derive(Clone, Debug, Default)]
-pub struct SandboxConfig {
+pub(crate) struct SandboxConfig {
     /// Filesystem (mounts, rootfs, working dir, procfs) configuration.
-    pub filesystem: FilesystemConfig,
+    pub(crate) filesystem: FilesystemConfig,
     /// Resource-limit (cgroup + rlimit) configuration.
-    pub resources: ResourceConfig,
+    pub(crate) resources: ResourceConfig,
     /// Network-isolation configuration.
-    pub network: NetworkConfig,
+    pub(crate) network: NetworkConfig,
     /// Security (seccomp, identity) configuration.
-    pub security: SecurityConfig,
+    pub(crate) security: SecurityConfig,
     /// Environment-variable / hostname configuration.
-    pub environment: EnvironmentConfig,
+    pub(crate) environment: EnvironmentConfig,
     /// Namespace-unshare configuration.
-    pub namespace: NamespaceConfig,
+    pub(crate) namespace: NamespaceConfig,
 }
 
 /// Sandbox builder — an aggregator for domain configs.

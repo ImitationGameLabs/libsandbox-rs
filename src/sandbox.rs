@@ -58,41 +58,29 @@ impl Sandbox {
     }
 
     /// Run a command in the sandbox (one-shot).
+    ///
+    /// The common case: stdin `/dev/null`, captured stdout/stderr. For custom
+    /// stdin or structured diagnostics, use [`run_cmd`](Self::run_cmd).
     pub fn run(&self, cmd: &str, args: &[&str]) -> Result<ExecutionResult> {
-        self.run_with_input(cmd, args, None)
+        self.run_cmd(cmd, args).run()
     }
 
-    /// Run a command with optional stdin input (one-shot).
-    pub fn run_with_input(
-        &self,
-        cmd: &str,
-        args: &[&str],
-        stdin: Option<&[u8]>,
-    ) -> Result<ExecutionResult> {
-        let mut report = self.run_with_input_detailed(cmd, args, stdin)?;
-        if self.execution_policy.resource_enforcement
-            == crate::config::ResourceEnforcement::BestEffort
-        {
-            if let Some(summary) = report.diagnostics.degradation_summary() {
-                append_best_effort_warning(&mut report.result.stderr, &summary);
-            }
+    /// Begin building a one-shot run with optional stdin and/or structured
+    /// diagnostics.
+    ///
+    /// The returned [`RunBuilder`] owns a clone of the sandbox config, so it can
+    /// be held independently of this [`Sandbox`] (mirroring
+    /// [`build_spawn`](Self::build_spawn)). Terminate with
+    /// [`run`](RunBuilder::run) (bare result) or
+    /// [`run_detailed`](RunBuilder::run_detailed) (result + diagnostics).
+    pub fn run_cmd(&self, cmd: &str, args: &[&str]) -> RunBuilder {
+        RunBuilder {
+            config: self.config.clone(),
+            policy: self.execution_policy.clone(),
+            command: cmd.to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            stdin: None,
         }
-        Ok(report.result)
-    }
-
-    /// Run a command and return structured diagnostics alongside the result.
-    pub fn run_detailed(&self, cmd: &str, args: &[&str]) -> Result<ExecutionReport> {
-        self.run_with_input_detailed(cmd, args, None)
-    }
-
-    /// Run a command with optional stdin input and return structured diagnostics.
-    pub fn run_with_input_detailed(
-        &self,
-        cmd: &str,
-        args: &[&str],
-        stdin: Option<&[u8]>,
-    ) -> Result<ExecutionReport> {
-        process::run(&self.config, &self.execution_policy, cmd, args, stdin)
     }
 
     /// Spawn a sandboxed process and return a handle for interactive use.
@@ -141,11 +129,6 @@ impl Sandbox {
     /// Get the sandbox ID.
     pub fn id(&self) -> &str {
         &self.id
-    }
-
-    /// Get the platform name.
-    pub fn platform(&self) -> &'static str {
-        "linux"
     }
 }
 
@@ -225,13 +208,81 @@ impl SpawnBuilder {
     }
 }
 
-fn append_best_effort_warning(stderr: &mut String, summary: &str) {
-    if !stderr.is_empty() && !stderr.ends_with('\n') {
-        stderr.push('\n');
+/// Builder for a one-shot sandboxed run with optional stdin and/or structured
+/// diagnostics.
+///
+/// Created by [`Sandbox::run_cmd`]. Owns its configuration (cloned from the
+/// parent [`Sandbox`]), so it is not lifetime-tied to the sandbox. Terminate
+/// with [`run`](Self::run) for the bare [`ExecutionResult`] or
+/// [`run_detailed`](Self::run_detailed) for an [`ExecutionReport`] with
+/// limit/metric diagnostics.
+pub struct RunBuilder {
+    config: SandboxConfig,
+    policy: ExecutionPolicy,
+    command: String,
+    args: Vec<String>,
+    stdin: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for RunBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunBuilder")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("has_stdin", &self.stdin.is_some())
+            .finish_non_exhaustive()
     }
-    stderr.push_str("[libsandbox] best-effort degradation: ");
-    stderr.push_str(summary);
-    stderr.push('\n');
+}
+
+impl RunBuilder {
+    /// Provide stdin bytes for the child.
+    ///
+    /// `None` (the default) connects the child's stdin to `/dev/null`. The
+    /// slice is copied so the builder is self-contained.
+    pub fn stdin(mut self, stdin: Option<&[u8]>) -> Self {
+        self.stdin = stdin.map(|s| s.to_vec());
+        self
+    }
+
+    /// Run to completion, returning the bare [`ExecutionResult`].
+    ///
+    /// Under a [`BestEffort`](crate::config::ResourceEnforcement::BestEffort)
+    /// policy, any limit/metric degradation is appended to `result.stderr` as a
+    /// human-readable notice (the bare result carries no diagnostics struct).
+    pub fn run(self) -> Result<ExecutionResult> {
+        let policy = self.policy.clone();
+        let mut report = self.run_detailed()?;
+        if policy.resource_enforcement == crate::config::ResourceEnforcement::BestEffort {
+            if let Some(summary) = report.diagnostics.degradation_summary() {
+                append_best_effort_warning(&mut report.result.stderr, &summary);
+            }
+        }
+        Ok(report.result)
+    }
+
+    /// Run to completion, returning an [`ExecutionReport`] (result + structured
+    /// limit/metric diagnostics). No degradation notice is appended to stderr —
+    /// inspect [`ExecutionDiagnostics`](crate::result::ExecutionDiagnostics)
+    /// directly.
+    pub fn run_detailed(self) -> Result<ExecutionReport> {
+        let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        process::run(
+            &self.config,
+            &self.policy,
+            &self.command,
+            &args,
+            self.stdin.as_deref(),
+        )
+    }
+}
+
+fn append_best_effort_warning(stderr: &mut Vec<u8>, summary: &str) {
+    if !stderr.is_empty() && !stderr.last().is_some_and(|&b| b == b'\n') {
+        stderr.push(b'\n');
+    }
+    stderr.extend_from_slice(b"[libsandbox] best-effort degradation: ");
+    stderr.extend_from_slice(summary.as_bytes());
+    stderr.push(b'\n');
 }
 
 #[cfg(test)]
@@ -275,9 +326,10 @@ mod tests {
             append_best_effort_warning(&mut report.result.stderr, &summary);
         }
 
-        assert!(report.result.stderr.contains("best-effort degradation"));
-        assert!(report.result.stderr.contains("memory limit not enforced"));
-        assert!(report.result.stderr.contains("peak memory unavailable"));
+        let stderr = report.result.stderr_lossy();
+        assert!(stderr.contains("best-effort degradation"));
+        assert!(stderr.contains("memory limit not enforced"));
+        assert!(stderr.contains("peak memory unavailable"));
     }
 
     #[test]

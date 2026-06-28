@@ -8,7 +8,7 @@
 //! metric collection) lives in [`wait_and_collect`] so that a future async
 //! entry point can reuse it without duplicating the logic.
 
-use super::child::Child;
+use super::child::{Child, ExitStatus};
 use super::fd::write_all_raw;
 use super::protocol::{prepare_sandbox, run_prepared, SpawnRequest};
 use super::wait::wait_with_timeout;
@@ -92,8 +92,21 @@ fn wait_and_collect(
         .resources
         .wall_time_limit
         .unwrap_or(Duration::from_secs(3600));
-    let (stdout, stderr, exit_code, killed_by_timeout, signal) =
-        wait_with_timeout(child_pid, stdout_fd, stderr_fd, timeout)?;
+    let super::wait::CollectedOutput {
+        stdout,
+        stderr,
+        exit_code,
+        killed_by_timeout,
+        signal,
+    } = wait_with_timeout(child_pid, stdout_fd, stderr_fd, timeout)?;
+
+    // Fold the (exit_code, signal) pair into a structured ExitStatus. When the
+    // child was signaled, `from_signal` records the signal (and derives the
+    // shell-convention 128+sig code); otherwise `from_exit` takes the raw code.
+    let status = match signal {
+        Some(sig) => ExitStatus::from_signal(sig),
+        None => ExitStatus::from_exit(exit_code),
+    };
 
     // Mark waited so Child::drop does not try to kill/reap.
     child.set_waited();
@@ -106,11 +119,10 @@ fn wait_and_collect(
         result: ExecutionResult {
             stdout,
             stderr,
-            exit_code,
+            status,
             duration: start.elapsed(),
             killed_by_timeout,
             killed_by_oom,
-            signal,
             peak_memory,
             cpu_time,
         },

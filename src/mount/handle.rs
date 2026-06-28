@@ -65,9 +65,9 @@ impl MountHandle {
     /// `source` is a path on the host. `target` is the path as seen from
     /// inside the sandbox (absolute, post-pivot-root).
     ///
-    /// Returns a [`DynamicMount`] handle that can be used to remove the mount
-    /// later. Dropping the handle without calling `remove()` does NOT unmount
-    /// — a warning is logged.
+    /// Returns a [`DynamicMount`] handle that auto-detaches the mount when
+    /// dropped. Call [`DynamicMount::detach`] first to keep the mount after the
+    /// handle is dropped.
     pub fn add_mount(
         &self,
         source: &Path,
@@ -167,8 +167,10 @@ impl std::fmt::Debug for MountHandle {
 /// Represents a dynamically added mount inside the sandbox.
 ///
 /// Created by [`MountHandle::add_mount()`] or [`MountHandle::add_tmpfs()`].
-/// Call [`remove()`](DynamicMount::remove) to unmount. Dropping without
-/// removal logs a warning — the mount persists until the sandbox exits.
+/// The mount is detached (`MNT_DETACH`) when this handle is dropped, unless
+/// [`remove()`](Self::remove) already detached it or [`detach()`](Self::detach)
+/// was called to drop the handle while leaving the mount in place. This mirrors
+/// the [`Child`](crate::Child) kill-on-drop / `detach()` pattern.
 pub struct DynamicMount {
     target: PathBuf,
     host_source: Option<PathBuf>,
@@ -206,16 +208,34 @@ impl DynamicMount {
     pub fn source(&self) -> Option<&Path> {
         self.host_source.as_deref()
     }
+
+    /// Drop this handle without unmounting, leaving the mount in place until the
+    /// sandbox exits.
+    ///
+    /// Consumes `self` and marks it removed so [`Drop`] skips the lazy detach.
+    /// Use this when the mount should outlive the handle; otherwise dropping the
+    /// handle detaches the mount automatically.
+    pub fn detach(mut self) {
+        self.removed = true;
+    }
 }
 
 impl Drop for DynamicMount {
     fn drop(&mut self) {
+        // RAII: lazily detach the mount unless the caller already removed it or
+        // explicitly detached. MNT_DETACH is best-effort — log any failure
+        // rather than propagate, since Drop cannot react.
         if !self.removed {
-            tracing::warn!(
-                "DynamicMount at {} dropped without explicit remove(); \
-                 mount persists until the sandbox exits",
-                self.target.display()
-            );
+            if let Err(e) = dynamic_unmount(
+                &self.target,
+                self.inner.user_ns_fd.as_raw_fd(),
+                self.inner.mnt_ns_fd.as_raw_fd(),
+            ) {
+                tracing::warn!(
+                    "DynamicMount at {} failed to unmount on drop: {e}",
+                    self.target.display()
+                );
+            }
         }
     }
 }

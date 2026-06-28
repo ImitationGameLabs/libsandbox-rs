@@ -93,7 +93,7 @@ fn test_parallel_execution_isolation() {
                 .unwrap();
 
             let result = sandbox.run("sh", &["-c", "echo $UNIQUE_ID"]).unwrap();
-            let output = result.stdout.trim().to_string();
+            let output = result.stdout_lossy().trim().to_string();
 
             results_clone.lock().unwrap().push((i, output));
         });
@@ -201,7 +201,7 @@ fn test_concurrent_proxy_no_conflicts() {
                 Ok(s) => {
                     // Just verify proxy setup works
                     let result = s.run("sh", &["-c", "echo $http_proxy"]);
-                    result.is_ok() && result.unwrap().stdout.contains("127.0.0.1")
+                    result.is_ok() && result.unwrap().stdout_lossy().contains("127.0.0.1")
                 }
                 Err(_) => {
                     // Proxy port might conflict - this is what we're testing
@@ -286,7 +286,7 @@ fn test_no_data_races() {
                 .unwrap();
 
             let result = sandbox.run("echo", &["test"]).unwrap();
-            if result.exit_code == 0 && result.stdout.trim() == "test" {
+            if result.status.code() == 0 && result.stdout_lossy().trim() == "test" {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
         });

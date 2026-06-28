@@ -26,8 +26,8 @@ fn test_strict_allows_basic_io() {
         .unwrap();
 
     let result = sandbox.run("echo", &["hello"]).unwrap();
-    assert_eq!(result.exit_code, 0);
-    assert!(result.stdout.contains("hello"));
+    assert_eq!(result.status.code(), 0);
+    assert!(result.stdout_lossy().contains("hello"));
 }
 
 #[test]
@@ -53,8 +53,8 @@ fn test_standard_allows_file_operations() {
         .run("sh", &["-c", "echo test > /tmp/file && cat /tmp/file"])
         .unwrap();
 
-    assert_eq!(result.exit_code, 0);
-    assert_eq!(result.stdout.trim(), "test");
+    assert_eq!(result.status.code(), 0);
+    assert_eq!(result.stdout_lossy().trim(), "test");
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn test_standard_allows_process_creation() {
         .unwrap();
 
     let result = sandbox.run("sh", &["-c", "echo a | cat"]).unwrap();
-    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.status.code(), 0);
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn test_permissive_allows_most_operations() {
         .run("sh", &["-c", "echo hello && ls / > /dev/null && pwd"])
         .unwrap();
 
-    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.status.code(), 0);
 }
 
 #[test]
@@ -195,12 +195,12 @@ fn test_seccomp_with_python() {
 
     match result {
         Ok(r) => {
-            if r.exit_code == 127 {
+            if r.status.code() == 127 {
                 eprintln!("warning: skipping seccomp python test because python3 is unavailable");
                 return;
             }
-            if r.exit_code == 0 {
-                assert!(r.stdout.contains("hello from python"));
+            if r.status.code() == 0 {
+                assert!(r.stdout_lossy().contains("hello from python"));
             }
         }
         Err(_) => {
@@ -235,8 +235,8 @@ fn test_custom_filter_from_standard() {
 
     // Basic commands should still work
     let result = sandbox.run("echo", &["custom filter works"]).unwrap();
-    assert_eq!(result.exit_code, 0);
-    assert!(result.stdout.contains("custom filter works"));
+    assert_eq!(result.status.code(), 0);
+    assert!(result.stdout_lossy().contains("custom filter works"));
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn test_custom_denylist_filter() {
 
     // Basic command should work
     let result = sandbox.run("echo", &["hello"]).unwrap();
-    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.status.code(), 0);
 }
 
 #[test]
@@ -301,14 +301,15 @@ fn test_blocked_syscall_kills_with_sigsys() {
 
     let result = sandbox.run("echo", &["hello"]).unwrap();
     assert_eq!(
-        result.signal,
+        result.status.signal(),
         Some(31),
         "blocked write should kill with SIGSYS (signal 31), got signal={:?}, exit_code={}",
-        result.signal,
-        result.exit_code
+        result.status.signal(),
+        result.status.code()
     );
     assert_eq!(
-        result.exit_code, 159,
+        result.status.code(),
+        159,
         "SIGSYS exit code should be 128+31=159"
     );
 }
@@ -362,15 +363,15 @@ fn test_blocked_syscall_returns_eperm() {
     assert!(
         !result.success(),
         "mkdir unexpectedly succeeded under Errno(EPERM); exit_code={}, stderr={}",
-        result.exit_code,
-        result.stderr
+        result.status.code(),
+        result.stderr_lossy()
     );
     // EPERM returns the errno to the caller — the process is NOT killed, so no signal.
     // This is the discriminating assertion vs. the KILL_PROCESS path above.
     assert!(
-        result.signal.is_none(),
+        result.status.signal().is_none(),
         "Errno(EPERM) should not deliver a signal, got signal={:?}",
-        result.signal
+        result.status.signal()
     );
     assert!(
         !target.exists(),

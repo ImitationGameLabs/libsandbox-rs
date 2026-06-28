@@ -30,7 +30,7 @@
 //!     .unwrap();
 //!
 //! let result = sandbox.run("python3", &["-c", "print('hello')"]).unwrap();
-//! println!("{}", result.stdout);
+//! println!("{}", result.stdout_lossy());
 //! ```
 //!
 //! ## Spawn (persistent process)
@@ -60,7 +60,7 @@ pub mod builder;
 pub mod cgroup;
 pub mod config;
 pub mod error;
-pub mod executor;
+pub(crate) mod executor;
 #[cfg(all(target_os = "linux", feature = "landlock"))]
 pub mod landlock;
 pub mod mount;
@@ -80,19 +80,18 @@ pub use config::{
     SecurityBuilder, SecurityConfig,
 };
 // Re-exports: builder and core types
-pub use builder::{SandboxBuilder, SandboxConfig};
-pub use error::{ChildStage, ErrorKind, Result, SandboxError};
+pub use builder::SandboxBuilder;
+pub use error::{ErrorKind, Result, SandboxError};
 pub use mount::{DynamicMount, MountHandle};
 pub use process::{
-    install_rlimits, install_seccomp, prepare_rlimits, prepare_sandbox, prepare_seccomp,
-    run_prepared, Child, ChildCtx, ChildPayload, ChildSetup, ExitStatus, PreparedRlimits,
-    PreparedSandbox, SpawnRequest,
+    install_rlimits, install_seccomp, prepare_rlimits, prepare_seccomp, Child, ChildCtx,
+    ChildOutput, ChildPayload, ChildSetup, DetachedChild, ExitStatus, PreparedRlimits,
 };
 pub use result::{
     ExecutionDiagnostics, ExecutionReport, ExecutionResult, LimitDiagnostics, LimitStatus,
     MetricDiagnostics, MetricStatus,
 };
-pub use sandbox::{Sandbox, SpawnBuilder};
+pub use sandbox::{RunBuilder, Sandbox, SpawnBuilder};
 pub use stdio::Stdio;
 
 // Landlock mechanism (optional, feature-gated). Each item gated individually so the
@@ -119,12 +118,11 @@ pub const MB: u64 = 1024 * 1024;
 /// 1 GB in bytes
 pub const GB: u64 = 1024 * 1024 * 1024;
 
-/// Check if the current platform supports sandboxing
-pub fn is_platform_supported() -> bool {
+/// Whether sandboxing is supported on the current host.
+///
+/// Probes unprivileged user-namespace availability — the kernel feature the
+/// sandbox's isolation builds on. The crate fails to compile off Linux, so a
+/// `true` result means "Linux host with unprivileged userns enabled".
+pub fn is_supported() -> bool {
     crate::executor::is_supported()
-}
-
-/// Get the current platform name
-pub fn platform_name() -> &'static str {
-    "linux"
 }

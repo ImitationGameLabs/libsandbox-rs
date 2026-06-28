@@ -34,7 +34,11 @@ fn bench_stdin_input(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("bytes", size), &size, |b, &size| {
             let input: Vec<u8> = vec![b'x'; size];
             b.iter(|| {
-                let result = sandbox.run_with_input("cat", &[], Some(&input)).unwrap();
+                let result = sandbox
+                    .run_cmd("cat", &[])
+                    .stdin(Some(&input))
+                    .run()
+                    .unwrap();
                 black_box(result)
             })
         });

@@ -10,8 +10,8 @@
 //! callers actually do with errors: match on [`ErrorKind`] via [`kind`](SandboxError::kind).
 //!
 //! Child-side setup failures arrive over the spawn error-pipe as a
-//! `[tag:u8][msg:bytes]` frame; the parent decodes the tag into a [`ChildStage`]
-//! and builds the context string.
+//! `[tag:u8][msg:bytes]` frame; the parent decodes the tag into a stage (an
+//! internal `ChildStage` discriminator) and builds the context string.
 
 /// Coarse discriminator for programmatic error matching.
 ///
@@ -45,6 +45,13 @@ pub enum ErrorKind {
     Io,
     /// The child process has already exited.
     ChildGone,
+    /// A blocking wait would deadlock: stdout/stderr are still piped and owned
+    /// by the [`Child`](crate::Child), so the child would block on a full pipe
+    /// buffer while the caller blocks on `waitpid`. Drain the pipes first
+    /// ([`Child::wait_with_output`](crate::Child::wait_with_output) or
+    /// [`Child::take_stdout_fd`](crate::Child::take_stdout_fd) /
+    /// [`take_stderr_fd`](crate::Child::take_stderr_fd)) before waiting.
+    WouldDeadlock,
     /// Anything not covered by a dedicated variant.
     Other,
 }
@@ -65,6 +72,7 @@ impl std::fmt::Display for ErrorKind {
             Self::Config => "config",
             Self::Io => "io",
             Self::ChildGone => "child-gone",
+            Self::WouldDeadlock => "would-deadlock",
             Self::Other => "other",
         };
         f.write_str(s)
@@ -75,9 +83,14 @@ impl std::fmt::Display for ErrorKind {
 ///
 /// Doubles as the on-wire tag for the spawn error-pipe (`[tag:u8][msg:bytes]`):
 /// the child writes the discriminant, the parent maps it back via [`from_tag`](Self::from_tag).
+///
+/// Internal: an implementation detail of the spawn error-pipe, not part of the
+/// public surface. Callers observe child-setup failures as an
+/// [`ErrorKind::Exec`](crate::ErrorKind) [`SandboxError`] with a stage-labeled
+/// context string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum ChildStage {
+pub(crate) enum ChildStage {
     /// Generic startup failure (e.g. abort before a specific stage ran).
     Startup = 0,
     /// Closing / arranging inherited file descriptors.
@@ -104,7 +117,7 @@ impl ChildStage {
     /// Decode a wire tag byte into a stage. Unknown bytes map to [`Startup`].
     ///
     /// [`Startup`]: ChildStage::Startup
-    pub fn from_tag(tag: u8) -> Self {
+    pub(crate) fn from_tag(tag: u8) -> Self {
         match tag {
             x if x == Self::Fd as u8 => Self::Fd,
             x if x == Self::Dup2 as u8 => Self::Dup2,
@@ -180,6 +193,22 @@ impl From<std::io::Error> for SandboxError {
 impl From<std::ffi::NulError> for SandboxError {
     fn from(e: std::ffi::NulError) -> Self {
         Self::new(ErrorKind::Config, e.to_string())
+    }
+}
+
+impl From<SandboxError> for std::io::Error {
+    /// Flatten a [`SandboxError`] into an [`std::io::Error`], preserving the
+    /// original error as its `source`.
+    ///
+    /// This is the bridge for the library-recommended "bring your own
+    /// [`process::Command`](std::process::Command) + `pre_exec` + `install_*`"
+    /// path: `pre_exec` closures must return
+    /// [`io::Result`](std::io::Result), while the `install_*` primitives return
+    /// [`Result`]. With this conversion the `?` operator propagates sandbox
+    /// errors across that boundary without a manual `map_err` shim and without
+    /// dropping the typed cause.
+    fn from(e: SandboxError) -> Self {
+        std::io::Error::other(e)
     }
 }
 

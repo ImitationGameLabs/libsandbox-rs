@@ -17,8 +17,8 @@ fn test_echo() {
 
     let result = sandbox.run("echo", &["hello", "world"]).unwrap();
 
-    assert_eq!(result.exit_code, 0);
-    assert!(result.stdout.contains("hello"));
+    assert_eq!(result.status.code(), 0);
+    assert!(result.stdout_lossy().contains("hello"));
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn test_exit_code_propagation() {
             .run("sh", &["-c", &format!("exit {}", code)])
             .unwrap();
 
-        assert_eq!(result.exit_code, code);
+        assert_eq!(result.status.code(), code);
     }
 }
 
@@ -56,7 +56,7 @@ fn test_stderr_capture() {
 
     let result = sandbox.run("sh", &["-c", "echo error >&2"]).unwrap();
 
-    assert!(result.stderr.contains("error"));
+    assert!(result.stderr_lossy().contains("error"));
 }
 
 #[test]
@@ -73,8 +73,12 @@ fn test_stdin_input() {
 
     let input = b"hello\nworld\n";
 
-    let result = sandbox.run_with_input("cat", &[], Some(input)).unwrap();
-    assert!(result.stdout.contains("hello"));
+    let result = sandbox
+        .run_cmd("cat", &[])
+        .stdin(Some(input))
+        .run()
+        .unwrap();
+    assert!(result.stdout_lossy().contains("hello"));
 }
 
 #[test]
@@ -98,8 +102,8 @@ fn test_environment_variables() {
 
     let result = sandbox.run("sh", &["-c", "echo $FOO $BAZ"]).unwrap();
 
-    assert!(result.stdout.contains("bar"));
-    assert!(result.stdout.contains("qux"));
+    assert!(result.stdout_lossy().contains("bar"));
+    assert!(result.stdout_lossy().contains("qux"));
 }
 
 #[test]
@@ -115,7 +119,9 @@ fn test_working_directory() {
         .unwrap();
 
     let result = sandbox.run("pwd", &[]).unwrap();
-    assert!(result.stdout.contains("/tmp") || result.stdout.contains("/private/tmp"));
+    assert!(
+        result.stdout_lossy().contains("/tmp") || result.stdout_lossy().contains("/private/tmp")
+    );
 }
 
 #[test]
@@ -153,8 +159,8 @@ fn test_long_output() {
         )
         .unwrap();
     assert!(result.success());
-    assert!(result.stdout.contains("line1"));
-    assert!(result.stdout.contains("line1000"));
+    assert!(result.stdout_lossy().contains("line1"));
+    assert!(result.stdout_lossy().contains("line1000"));
 }
 
 #[test]

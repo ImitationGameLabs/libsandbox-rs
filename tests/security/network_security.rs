@@ -60,9 +60,9 @@ fn test_ip_bypass_blocked() {
 
     // Direct IP connection should NOT work
     assert!(
-        !result.stdout.contains("DIRECT_IP_WORKED"),
+        !result.stdout_lossy().contains("DIRECT_IP_WORKED"),
         "SECURITY: Direct IP bypass succeeded! Sandboxed process connected to 8.8.8.8 despite domain whitelist. Stdout: {}",
-        result.stdout
+        result.stdout_lossy()
     );
 }
 
@@ -107,9 +107,10 @@ fn test_non_whitelisted_domain_blocked() {
     "#]).unwrap();
 
     // Non-whitelisted domain should be blocked
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
     assert!(
-        output.contains("BLOCKED") || output.contains("NO_CURL") || result.exit_code != 0,
+        output.contains("BLOCKED") || output.contains("NO_CURL") || result.status.code() != 0,
         "Non-whitelisted domain was not blocked: {}",
         output
     );
@@ -163,7 +164,8 @@ fn test_whitelisted_domain_allowed() {
         )
         .unwrap();
 
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
 
     // Skip if no curl
     if output.contains("NO_CURL") {
@@ -218,7 +220,7 @@ fn test_wildcard_domain_matching() {
 
     // Proxy should be configured
     assert!(
-        result.stdout.contains("PROXY_SET"),
+        result.stdout_lossy().contains("PROXY_SET"),
         "Proxy not configured for network whitelist mode"
     );
 }
@@ -273,9 +275,10 @@ fn test_https_tunnel_respects_whitelist() {
         )
         .unwrap();
 
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
     assert!(
-        output.contains("BLOCKED") || output.contains("NO_CURL") || result.exit_code != 0,
+        output.contains("BLOCKED") || output.contains("NO_CURL") || result.status.code() != 0,
         "HTTPS to non-whitelisted domain was not blocked: {}",
         output
     );
@@ -325,7 +328,8 @@ fn test_network_none_blocks_all() {
         .unwrap();
 
     // Network operations should fail
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
     assert!(
         output.contains("EXIT:") && !output.contains("EXIT:0")
             || output.contains("NO_TOOLS")
@@ -379,7 +383,8 @@ fn test_localhost_always_allowed() {
         .unwrap();
 
     // The connection attempt itself might fail (no service), but shouldn't be blocked
-    let output = result.stdout.trim();
+    let stdout = result.stdout_lossy();
+    let output = stdout.trim();
     assert!(
         output.contains("NC_EXIT:") || output.contains("NO_NC"),
         "Localhost connection was blocked: {}",

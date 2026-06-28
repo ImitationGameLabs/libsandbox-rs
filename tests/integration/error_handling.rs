@@ -46,7 +46,7 @@ fn test_error_command_not_found() {
         }
         Ok(r) => {
             // Shell might have caught it
-            assert!(r.exit_code != 0, "Nonexistent command should fail");
+            assert!(r.status.code() != 0, "Nonexistent command should fail");
         }
     }
 }
@@ -93,7 +93,7 @@ fn test_error_permission_denied() {
         }
         Ok(r) => {
             // If execution succeeded, exit code should be non-zero.
-            assert!(r.exit_code != 0, "Non-executable should fail");
+            assert!(r.status.code() != 0, "Non-executable should fail");
         }
     }
 
