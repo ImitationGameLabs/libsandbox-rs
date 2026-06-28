@@ -102,7 +102,8 @@ pub use stdio::Stdio;
 // crate compiles cleanly with the feature off.
 #[cfg(all(target_os = "linux", feature = "landlock"))]
 pub use landlock::{
-    install_landlock, landlock_hook, prepare_landlock, AccessDecision, PreparedLandlock, ReadPolicy,
+    baseline_readable, baseline_writable, build_ruleset, install_landlock, landlock_hook,
+    prepare_landlock, AccessDecision, AccessFs, BitFlags, PreparedLandlock, ReadPolicy, ABI,
 };
 
 // Mount-namespace child-side primitives (Linux only; libc syscalls, no extra dependency). A

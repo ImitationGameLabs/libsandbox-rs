@@ -4,7 +4,20 @@
 //! network, resource, or seccomp isolation (those live in their own modules and are
 //! composed by the caller). Given an [`AccessDecision`], landlock restricts a spawned
 //! process so it may read per the decision's read policy and write only to the listed
-//! paths (plus a small baseline of scratch/devices every program needs to function).
+//! paths.
+//!
+//! # Mechanism vs policy
+//!
+//! The module is split in two layers:
+//! - **Mechanism floor** ([`build_ruleset`]): builds a ruleset from explicit
+//!   `(path, access-mask)` rules. It owns exactly one invariant — a non-directory path
+//!   must not carry directory-only access-rights — so directories, device files, and
+//!   regular files may be freely mixed. Callers wanting full control (custom masks, their
+//!   own baseline, no [`AccessDecision`]) start here.
+//! - **Policy preset** ([`prepare_landlock`] + [`baseline_readable`] /
+//!   [`baseline_writable`]): an opinionated mapping from [`AccessDecision`] onto the
+//!   floor, plus opt-in baseline presets a caller composes itself. Neither baseline is
+//!   forced; both are building blocks.
 //!
 //! # Toolbox split
 //!
@@ -33,9 +46,10 @@
 //! # Fail-closed
 //!
 //! Two gates ensure a process never runs unrestricted by accident:
-//! 1. [`prepare_landlock`] builds the ruleset with `CompatLevel::HardRequirement` — if
-//!    the kernel lacks landlock (or it is disabled at boot), ruleset creation errors and
-//!    the spawn is aborted (`ensure_supported` caches this probe process-wide).
+//! 1. [`build_ruleset`] (the floor; [`prepare_landlock`] inherits this by delegation)
+//!    probes kernel support up front via `ensure_supported` (cached process-wide) and
+//!    builds the ruleset with `CompatLevel::HardRequirement` — if the kernel lacks
+//!    landlock (or it is disabled at boot), the build errors and the spawn is aborted.
 //! 2. [`install_landlock`] runs `prctl(PR_SET_NO_NEW_PRIVS)` +
 //!    `landlock_restrict_self(2)` in the child; if either fails it returns `Err`, which
 //!    the spawn pipeline translates into a `ChildStage::Hook` abort.
@@ -47,9 +61,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use landlock::{
-    Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
-    RulesetCreatedAttr, ABI,
+    Access, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
 };
+
+// Re-export the mask vocabulary so callers can compose raw `(path, mask)` rules for
+// [`build_ruleset`] without depending on landlock / enumflags2 themselves.
+pub use landlock::{AccessFs, BitFlags, ABI};
 
 use crate::error::{ErrorKind, Result, SandboxError};
 use crate::{ChildCtx, ChildSetup};
@@ -58,16 +75,21 @@ mod decision;
 
 pub use decision::{AccessDecision, ReadPolicy};
 
-/// Scratch/device paths every landlocked process needs regardless of its writable set:
-/// temp dirs (`$TMPDIR` or `/tmp`, plus `/var/tmp`) and the character devices a shell
-/// touches (`/dev/null` for redirects, `/dev/tty`, etc.). Only paths that actually exist
-/// on the host are returned — landlock path rules require it.
+/// A convenient writable-set **preset**: scratch dirs (`$TMPDIR` or `/tmp`, plus
+/// `/var/tmp`) and the character devices a shell touches (`/dev/null` for redirects,
+/// `/dev/tty`, etc.). Only paths that actually exist on the host are returned.
 ///
-/// Private: merged inside [`prepare_landlock`], callers never compose it. (The asymmetry
-/// with the public [`baseline_readable`] is intentional — `Narrow` callers must assemble
-/// `baseline_readable()` into their read allowlist themselves, whereas the write baseline
-/// is always merged here because every landlocked program unconditionally needs it.)
-fn baseline_writable() -> Vec<PathBuf> {
+/// This is an **opt-in** building block, symmetric with [`baseline_readable`]: compose
+/// it into [`AccessDecision::writable`] yourself (`writable.extend(baseline_writable())`)
+/// when you want these defaults, or skip it and construct your own set entirely. Unlike a
+/// forced merge, that keeps the writable input visible — to you and to tests.
+///
+/// The `/dev/*` device entries are character special files (non-directories). They are
+/// safe to pass to [`build_ruleset`] precisely because it narrows any non-directory path
+/// to file-level rights (the file-type invariant it owns). A caller that bypasses
+/// [`build_ruleset`] and hand-rolls landlock rules with directory-only bits on these
+/// devices re-hits the `PathBeneathError::DirectoryAccess` rejection.
+pub fn baseline_writable() -> Vec<PathBuf> {
     let mut out = Vec::new();
 
     out.push(std::env::temp_dir()); // $TMPDIR or /tmp
@@ -80,14 +102,15 @@ fn baseline_writable() -> Vec<PathBuf> {
     out
 }
 
-/// System paths a narrow-read process needs to read+execute to function: the program
-/// itself, coreutils, shared libs, the dynamic linker, procfs/sysfs, and devices.
-/// Deliberately EXCLUDES `/etc` and `$HOME` — those are where secrets live
-/// (`/etc/secrets`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config` tokens), so a narrow-read
-/// process gets clean zero-access to them.
+/// A convenient read-allowlist **preset**: system paths a narrow-read process needs to
+/// read+execute to function — the program itself, coreutils, shared libs, the dynamic
+/// linker, procfs/sysfs, and devices. Deliberately EXCLUDES `/etc` and `$HOME` — those
+/// are where secrets live (`/etc/secrets`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config`
+/// tokens), so a narrow-read process gets clean zero-access to them.
 ///
-/// Only paths that exist on the host are returned (landlock requires it). The caller
-/// composes this with the workspace to form the narrow read allowlist.
+/// Opt-in and composable, like [`baseline_writable`]: the caller assembles this with the
+/// workspace to form the narrow read allowlist (see [`ReadPolicy::Narrow`]). Only paths
+/// that exist on the host are returned (landlock requires it).
 pub fn baseline_readable() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = [
         "/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/libx32", "/proc", "/sys", "/dev",
@@ -103,30 +126,48 @@ pub fn baseline_readable() -> Vec<PathBuf> {
     out
 }
 
-/// Grant mask for [`build_ruleset_from_grants`].
-#[derive(Clone, Copy, Debug)]
-enum Grant {
-    /// read+execute only (the path is read-only within this ruleset).
-    Read,
-    /// full read+write+execute.
-    Write,
-}
-
 /// Flatten any landlock-crate error into a [`SandboxError`] classified as
 /// [`ErrorKind::Landlock`] (carries its `Display`).
 fn ll_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> SandboxError {
     SandboxError::new(ErrorKind::Landlock, e.to_string())
 }
 
-/// Build a ruleset from an explicit list of `(path, grant)` rules — the caller controls
-/// exactly what is granted, including `/`. Shared engine behind both policies: the broad
-/// policy grants `/` Read + each writable Write; the narrow policy grants only a read
-/// allowlist + writable Write, so `$HOME` and secrets are denied by default
-/// (`handle_access(full)` is deny-default).
+/// Narrow `desired` to the access-rights landlock will accept for `path`'s file type —
+/// the one invariant the mechanism owns.
 ///
-/// Non-existent and duplicate paths are skipped (a path may have been removed after it
-/// was added to the decision). `HardRequirement` fails closed on an unsupported kernel
-/// — gate #1.
+/// A non-directory fd (character/block device, regular file, fifo, socket, symlink, ...)
+/// must drop the directory-only bits (`ReadDir` / `Make*` / `Remove*`), else `add_rule`
+/// rejects the whole ruleset with `PathBeneathError::DirectoryAccess`. This is the root
+/// cause of the device-file bug (`/dev/null` granted directory bits), fixed once here for
+/// every non-directory file type.
+///
+/// `from_file(abi)` (rather than a hardcoded bit set) is `from_all(abi) & ACCESS_FILE`,
+/// so it tracks the pinned [`ABI`] and drops exactly the directory-only bits — never a
+/// file-applicable bit the caller asked for (no silent under-grant).
+///
+/// Pure: no kernel, no fd — unit-testable without landlock support.
+fn legal_mask(desired: BitFlags<AccessFs>, path: &Path, abi: ABI) -> BitFlags<AccessFs> {
+    if path.is_dir() {
+        desired
+    } else {
+        desired & AccessFs::from_file(abi)
+    }
+}
+
+/// Mechanism floor: build a ruleset from explicit `(path, desired-mask)` rules.
+///
+/// The caller controls exactly what is granted — including `/` — by composing raw
+/// [`AccessFs`] masks (e.g. `AccessFs::from_read(ABI::V1)` for a read-only rule,
+/// `AccessFs::from_all(ABI::V1)` for full read+write). [`prepare_landlock`] is the
+/// opinionated policy built on top of this; callers wanting full control (custom masks,
+/// their own baseline, no [`AccessDecision`]) call this directly.
+///
+/// Owns the file-type invariant: non-directory paths are automatically narrowed to
+/// file-level rights, so directories, device files, and regular files may be freely
+/// mixed without the caller branching on file type. Non-existent paths are skipped (a
+/// path may have been removed after it was added); duplicate paths are skipped too, with
+/// the first mask winning. `HardRequirement` fails closed on an unsupported kernel —
+/// gate #1.
 ///
 /// # ABI pin
 ///
@@ -134,9 +175,12 @@ fn ll_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> SandboxError 
 /// `Refer`/`Truncate`/`IoctlDev` access types are not handled and therefore unrestricted
 /// by the domain — e.g. certain device ioctls are not confined. Upgrading the ABI is
 /// tracked separately.
-fn build_ruleset_from_grants(grants: &[(PathBuf, Grant)]) -> Result<OwnedFd> {
+pub fn build_ruleset(rules: &[(PathBuf, BitFlags<AccessFs>)]) -> Result<PreparedLandlock> {
+    ensure_supported()?;
+
     let abi = ABI::V1;
-    let read_exec = AccessFs::from_read(abi); // includes Execute for V1+
+    // Handled-access scope for the ruleset (the universe of rights this domain can
+    // grant), not a per-rule mask — each rule carries its own mask below.
     let full = AccessFs::from_all(abi);
 
     let mut created = Ruleset::default()
@@ -146,14 +190,16 @@ fn build_ruleset_from_grants(grants: &[(PathBuf, Grant)]) -> Result<OwnedFd> {
         .create()
         .map_err(ll_error)?;
     let mut seen: std::collections::HashSet<&Path> = std::collections::HashSet::new();
-    for (path, grant) in grants {
+    for (path, desired) in rules {
+        // `exists()` must run before `legal_mask`: it rejects dangling symlinks and
+        // missing paths so the mask decision is never made for an absent target. (A
+        // dir→file swap between `is_dir` here and landlock's `fstat` on the opened fd is
+        // a TOCTOU window only a concurrent *host* process can race; the sandboxed child
+        // cannot, running as it does after `restrict_self`.)
         if !path.exists() || !seen.insert(path.as_path()) {
             continue;
         }
-        let mask = match grant {
-            Grant::Read => read_exec,
-            Grant::Write => full,
-        };
+        let mask = legal_mask(*desired, path, abi);
         created = created
             .add_rule(PathBeneath::new(PathFd::new(path).map_err(ll_error)?, mask))
             .map_err(ll_error)?;
@@ -164,7 +210,7 @@ fn build_ruleset_from_grants(grants: &[(PathBuf, Grant)]) -> Result<OwnedFd> {
     let fd_opt: Option<OwnedFd> = cloned.into();
     let fd = fd_opt.ok_or_else(|| SandboxError::new(ErrorKind::Landlock, "ruleset has no fd"))?;
     set_cloexec(&fd)?;
-    Ok(fd)
+    Ok(PreparedLandlock { fd })
 }
 
 /// Mark `fd` close-on-exec so the child does not inherit it past `execve` (the fd is
@@ -211,33 +257,36 @@ impl PreparedLandlock {
 /// - **Narrow** ([`ReadPolicy::Narrow`]): grant only the read allowlist + writable full
 ///   access — `$HOME`/secrets are denied by default.
 ///
-/// The writable set is merged with the always-included `baseline_writable` scratch/
-/// devices (non-configurable; a landlocked program requires these to function). Apply the
-/// result in the child via [`install_landlock`] (or use [`landlock_hook`] to compose
-/// both).
+/// `decision.writable` is granted **verbatim** — no baseline is silently merged. Compose
+/// [`baseline_writable`] into it yourself (`writable.extend(baseline_writable())`) when
+/// you want the scratch/device defaults; this mirrors how [`ReadPolicy::Narrow`] requires
+/// composing [`baseline_readable`] into the read allowlist. Keeping the writable input
+/// literal makes it a visible decision (and a visible test dimension) rather than an
+/// invisible one. Apply the result in the child via [`install_landlock`] (or use
+/// [`landlock_hook`] to compose both).
 pub fn prepare_landlock(decision: &AccessDecision) -> Result<PreparedLandlock> {
-    ensure_supported()?;
+    let abi = ABI::V1;
+    let read = AccessFs::from_read(abi); // includes Execute for V1+
+                                         // Per-rule mask granted to each writable path (narrowed to file-level rights by the
+                                         // floor for non-directories). Distinct from build_ruleset's handled-access scope.
+    let full = AccessFs::from_all(abi);
 
-    // Writable = the decision's set + the baseline every program needs, de-duped.
-    let mut writable = decision.writable.clone();
-    writable.extend(baseline_writable());
-    writable.sort();
-    writable.dedup();
-
-    let mut grants: Vec<(PathBuf, Grant)> =
-        writable.into_iter().map(|p| (p, Grant::Write)).collect();
+    let mut rules: Vec<(PathBuf, BitFlags<AccessFs>)> = Vec::new();
+    // writable is taken verbatim — caller composes `baseline_writable()` if it wants it.
+    for p in &decision.writable {
+        rules.push((p.clone(), full));
+    }
     match &decision.read {
-        ReadPolicy::Broad => grants.push((PathBuf::from("/"), Grant::Read)),
+        ReadPolicy::Broad => rules.push((PathBuf::from("/"), read)),
         ReadPolicy::Narrow { paths } => {
             for p in paths {
-                grants.push((p.clone(), Grant::Read));
+                rules.push((p.clone(), read));
             }
             // Deliberately no `/` grant: anything not listed is unreadable.
         }
     }
 
-    let fd = build_ruleset_from_grants(&grants)?;
-    Ok(PreparedLandlock { fd })
+    build_ruleset(&rules)
 }
 
 /// Child-side: apply the prepared landlock domain to the current process.
@@ -301,8 +350,8 @@ static SUPPORT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
 /// Probe landlock support exactly once (process-wide cached). The probe builds a trivial
 /// ruleset with `CompatLevel::HardRequirement`; on an unsupported/disabled kernel this
-/// errors and is cached so subsequent [`prepare_landlock`] calls fail fast with a clear
-/// message instead of aborting every spawn.
+/// errors and is cached so subsequent ruleset builds (via [`build_ruleset`], and thus
+/// [`prepare_landlock`]) fail fast with a clear message instead of aborting every spawn.
 ///
 /// `pub(crate)` rather than `pub`: the cache is process-global mutable state (an
 /// implementation detail) that should not be triggered by external callers.

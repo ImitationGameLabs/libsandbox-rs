@@ -52,9 +52,11 @@ pub enum ReadPolicy {
 
 /// Per-spawn access decision consumed by [`super::prepare_landlock`].
 ///
-/// - `writable` is granted full read+write (the caller's write set + scratch + the
-///   always-merged `baseline_writable` scratch/devices). For the narrow policy this is
-///   typically just scratch.
+/// `writable` is granted full read+write **verbatim** — [`super::prepare_landlock`] merges
+/// no baseline into it. Compose [`super::baseline_writable`] into this list yourself when
+/// you want the scratch/device defaults (mirroring how [`ReadPolicy::Narrow`] requires
+/// composing [`super::baseline_readable`] into the read allowlist). For the narrow policy
+/// `writable` is typically just scratch.
 ///
 /// Read-only holes are NOT carried here: see the module-level note on realizing them via
 /// `FilesystemConfig` mounts.
@@ -62,6 +64,7 @@ pub enum ReadPolicy {
 pub struct AccessDecision {
     /// What the spawned process may read.
     pub read: ReadPolicy,
-    /// Paths granted write access (in addition to the merged baseline).
+    /// Paths granted write access, verbatim (compose [`super::baseline_writable`] for the
+    /// scratch/device defaults — see the struct doc).
     pub writable: Vec<PathBuf>,
 }

@@ -1,20 +1,26 @@
 //! Landlock mechanism tests.
 //!
-//! Drives the production `prepare_landlock` + `restrict_self_raw` (or
-//! `build_ruleset_from_grants` for the limitation probes) through a raw
-//! `std::process::Command::pre_exec` — deliberately NOT the full sandbox spawn path, so
-//! these tests stay independent of the `tokio` feature and exercise only landlock.
+//! Drives the production `prepare_landlock` + `restrict_self_raw` (or [`build_ruleset`]
+//! for the limitation probes) through a raw `std::process::Command::pre_exec` —
+//! deliberately NOT the full sandbox spawn path, so these tests stay independent of the
+//! `tokio` feature and exercise only landlock.
 
 use super::*;
-use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
 /// Landlock may be unavailable (old kernel, CI without it, boot-disabled); a test calls
-/// this and returns early (skip) when so, rather than failing.
+/// this and returns early (skip) when so, rather than failing. The skip is logged so a
+/// vacuous green run is visible in CI output — but note the *primary* regression gates
+/// live in [`legal_mask`]-level unit tests, which run with no kernel and never skip.
 fn skip_if_unsupported() -> bool {
-    ensure_supported().is_err()
+    if ensure_supported().is_err() {
+        eprintln!("skipped: landlock unsupported on this host");
+        true
+    } else {
+        false
+    }
 }
 
 /// A parent dir guaranteed *outside* the baseline writable set (`$TMPDIR` / `/tmp` /
@@ -61,14 +67,15 @@ fn run_under_decision(decision: &AccessDecision, script: &str) -> std::process::
     cmd.output().expect("spawn + wait should succeed")
 }
 
-/// Run `bash -c <script>` under a ruleset built from explicit `grants` (via the
-/// production `build_ruleset_from_grants`). Used by the limitation probes that need raw
-/// control over the granted set.
-fn run_under_grants(grants: &[(&Path, Grant)], script: &str) -> std::process::Output {
-    let grants: Vec<(PathBuf, Grant)> = grants.iter().map(|(p, g)| (p.to_path_buf(), *g)).collect();
-    let fd = build_ruleset_from_grants(&grants)
-        .expect("ruleset build should succeed on a supported kernel");
-    let raw = fd.as_raw_fd();
+/// Run `bash -c <script>` under a ruleset built from explicit `(path, mask)` rules (via
+/// the production [`build_ruleset`]). Used by the limitation probes that need raw control
+/// over the granted masks.
+fn run_under_rules(rules: &[(&Path, BitFlags<AccessFs>)], script: &str) -> std::process::Output {
+    let owned: Vec<(PathBuf, BitFlags<AccessFs>)> =
+        rules.iter().map(|(p, m)| (p.to_path_buf(), *m)).collect();
+    let prepared =
+        build_ruleset(&owned).expect("ruleset build should succeed on a supported kernel");
+    let raw = prepared.raw_fd();
     let mut cmd = Command::new("bash");
     cmd.arg("-c").arg(script);
     // SAFETY: `restrict_self_raw` issues only async-signal-safe raw syscalls.
@@ -136,7 +143,7 @@ fn build_ruleset_succeeds_when_supported() {
         return;
     }
     let dir = std::env::temp_dir();
-    build_ruleset_from_grants(&[(dir, Grant::Write)])
+    build_ruleset(&[(dir, AccessFs::from_all(ABI::V1))])
         .expect("ruleset build should succeed on a supported kernel");
 }
 
@@ -164,13 +171,13 @@ fn writable_ancestor_cannot_be_narrowed_to_readonly() {
     let hole = unique_dir(&root, "hole"); // host-writable subdir
 
     // Attempt the carve: write on root, PLUS a read-only rule on the hole.
-    let grants: &[(&Path, Grant)] = &[
-        (Path::new("/"), Grant::Read),
-        (&root, Grant::Write),
-        (&hole, Grant::Read), // attempted read-only override — has no effect
+    let rules: &[(&Path, BitFlags<AccessFs>)] = &[
+        (Path::new("/"), AccessFs::from_read(ABI::V1)),
+        (&root, AccessFs::from_all(ABI::V1)),
+        (&hole, AccessFs::from_read(ABI::V1)), // attempted read-only override — no effect
     ];
     let target = hole.join("f");
-    let output = run_under_grants(grants, &format!("echo x > '{}'", target.display()));
+    let output = run_under_rules(rules, &format!("echo x > '{}'", target.display()));
 
     // The carve FAILS: root's recursive write grant covers the hole, and the read-only
     // rule can only grant read, not deny write. So writing succeeds.
@@ -201,11 +208,14 @@ fn hole_via_complement_enumeration_is_readonly() {
 
     // Grant read on / (so bash + libs load) and write on the sibling ONLY. Deliberately
     // do NOT grant root (it would cover the hole) or the hole.
-    let grants: &[(&Path, Grant)] = &[(Path::new("/"), Grant::Read), (&sibling, Grant::Write)];
+    let rules: &[(&Path, BitFlags<AccessFs>)] = &[
+        (Path::new("/"), AccessFs::from_read(ABI::V1)),
+        (&sibling, AccessFs::from_all(ABI::V1)),
+    ];
 
     // The granted sibling is writable.
     let sib_target = sibling.join("f");
-    let out = run_under_grants(grants, &format!("echo x > '{}'", sib_target.display()));
+    let out = run_under_rules(rules, &format!("echo x > '{}'", sib_target.display()));
     assert!(
         out.status.success() && sib_target.exists(),
         "sibling should be writable; stderr={}",
@@ -215,7 +225,7 @@ fn hole_via_complement_enumeration_is_readonly() {
     // The ungranted hole is read-only (no write grant, and root is not granted so it
     // cannot cover the hole).
     let hole_target = hole.join("f");
-    let out = run_under_grants(grants, &format!("echo x > '{}'", hole_target.display()));
+    let out = run_under_rules(rules, &format!("echo x > '{}'", hole_target.display()));
     assert!(
         !out.status.success(),
         "hole should be read-only (complement enumeration); stderr={}",
@@ -273,4 +283,89 @@ fn narrow_read_denies_paths_outside_allowlist() {
         "secret read unexpectedly succeeded under narrow read; stdout={stdout}, stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Pure unit test for [`legal_mask`] — the primary regression gate for the device-file
+/// bug. No kernel, no landlock support required, never skipped: the mask logic must be
+/// correct on every host. Before the fix, non-directory paths granted directory-only bits
+/// and `add_rule` rejected the whole ruleset.
+#[test]
+fn legal_mask_narrows_non_directory_to_file_rights() {
+    let abi = ABI::V1;
+    let full = AccessFs::from_all(abi);
+    let file_rights = AccessFs::from_file(abi);
+
+    // Directory: the desired mask is kept verbatim, directory-only bits included.
+    let dir = unique_dir(&std::env::temp_dir(), "legal-mask-dir");
+    let dir_mask = legal_mask(full, &dir, abi);
+    assert_eq!(dir_mask, full, "a directory keeps the full mask");
+    assert!(dir_mask.contains(AccessFs::ReadDir));
+    assert!(dir_mask.contains(AccessFs::MakeReg));
+    assert!(dir_mask.contains(AccessFs::RemoveFile));
+
+    // Regular file: directory-only bits are dropped, file rights retained. Created inside
+    // a unique dir so the name is collision-free across parallel test threads.
+    let file = unique_dir(&std::env::temp_dir(), "legal-mask-file").join("f");
+    std::fs::write(&file, b"x").unwrap();
+    let file_mask = legal_mask(full, &file, abi);
+    assert_eq!(
+        file_mask, file_rights,
+        "a non-directory narrows to from_file(abi)"
+    );
+    assert!(!file_mask.contains(AccessFs::ReadDir));
+    assert!(!file_mask.contains(AccessFs::MakeReg));
+    assert!(!file_mask.contains(AccessFs::RemoveFile));
+    assert!(file_mask.contains(AccessFs::ReadFile));
+    assert!(file_mask.contains(AccessFs::WriteFile));
+    assert!(file_mask.contains(AccessFs::Execute));
+
+    // A read-only desired on a file collapses to the read+exec file bits.
+    let read_mask = legal_mask(AccessFs::from_read(abi), &file, abi);
+    assert_eq!(
+        read_mask,
+        AccessFs::from_read(abi) & file_rights,
+        "a read desired on a non-directory narrows to read file rights",
+    );
+    let _ = std::fs::remove_file(&file);
+}
+
+/// Regression (integration, landlock-gated): a non-directory path in the writable set —
+/// the character devices [`baseline_writable`] lists (`/dev/null`) plus a regular file —
+/// must not break ruleset construction. Before the [`legal_mask`] fix, `/dev/null` was
+/// granted directory-only bits and `add_rule` rejected the whole ruleset at build time, so
+/// every landlocked spawn failed regardless of the command's read/write intent.
+#[test]
+fn non_directory_writable_does_not_break_ruleset() {
+    if skip_if_unsupported() {
+        return;
+    }
+    let Some(parent) = non_baseline_parent() else {
+        return;
+    };
+
+    // A pre-existing regular (non-directory) file the child must be able to overwrite.
+    let dir = unique_dir(&parent, "wf");
+    let file = dir.join("f");
+    std::fs::write(&file, b"").unwrap();
+
+    // baseline_writable() already pulls in /dev/null (where present); add the regular
+    // file. Both are non-directories — the bug would reject this ruleset outright.
+    let mut writable = baseline_writable();
+    writable.push(file.clone());
+
+    let decision = AccessDecision {
+        read: ReadPolicy::Broad,
+        writable,
+    };
+    // prepare_landlock succeeding (run_under_decision's expect) is itself the regression
+    // assertion; the redirects confirm the file/device rights actually apply at runtime.
+    let script = format!("echo hi > /dev/null && echo body > '{}'", file.display());
+    let output = run_under_decision(&decision, &script);
+
+    assert!(
+        output.status.success(),
+        "non-directory writable paths broke the ruleset or spawn; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "body\n");
 }
