@@ -1,6 +1,6 @@
 //! Composed agent sandbox with a `child_setup` hook.
 //!
-//! Demonstrates the v0.2 extensibility seam: a caller-supplied
+//! Demonstrates the extensibility seam: a caller-supplied
 //! [`ChildSetup`](libsandbox::ChildSetup) hook runs inside the sandboxed child
 //! after seccomp install and before `exec`. This is exactly the hook an agent
 //! runtime (e.g. just-agent) uses to layer its own setup (landlock, privilege
@@ -22,10 +22,9 @@ fn main() {
     std::fs::create_dir_all(&workspace).unwrap();
     let _ = &workspace; // kept for a real agent; this demo runs in /tmp.
 
-    // Compose the sandbox configuration explicitly via the builder — presets
-    // were removed in v0.2 in favor of explicit composition. Uses /tmp (which
-    // exists) as the working dir so the demo runs rootless without a bind
-    // mount to a host path that may not exist.
+    // Compose the sandbox configuration explicitly via the builder. Uses /tmp
+    // (which exists) as the working dir so the demo runs rootless without a
+    // bind mount to a host path that may not exist.
     let sandbox = Sandbox::builder()
         .filesystem(
             FilesystemConfig::builder()

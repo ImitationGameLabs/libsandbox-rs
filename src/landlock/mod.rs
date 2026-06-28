@@ -28,7 +28,7 @@
 //! **under** the active seccomp filter. The crate's `Standard` and `Strict` profiles
 //! allow it when the `landlock` feature is on (see `seccomp/presets.rs`). A `Custom`
 //! profile that denies `landlock_restrict_self` will trap the child at
-//! [`ChildStage::Hook`]. `Disabled` and `Permissive` are unaffected.
+//! `ChildStage::Hook`. `Disabled` and `Permissive` are unaffected.
 //!
 //! # Fail-closed
 //!
@@ -38,9 +38,7 @@
 //!    the spawn is aborted (`ensure_supported` caches this probe process-wide).
 //! 2. [`install_landlock`] runs `prctl(PR_SET_NO_NEW_PRIVS)` +
 //!    `landlock_restrict_self(2)` in the child; if either fails it returns `Err`, which
-//!    the spawn pipeline translates into a [`ChildStage::Hook`] abort.
-//!
-//! [`ChildStage::Hook`]: crate::error::ChildStage::Hook
+//!    the spawn pipeline translates into a `ChildStage::Hook` abort.
 
 #![cfg(all(target_os = "linux", feature = "landlock"))]
 

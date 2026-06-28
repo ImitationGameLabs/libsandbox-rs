@@ -1,7 +1,7 @@
 //! # libsandbox
 //!
-//! A Linux-first sandbox runtime providing namespace isolation, cgroup v2
-//! resource limits, seccomp filtering, and network isolation.
+//! A Linux-only sandbox primitives library providing namespace isolation,
+//! cgroup v2 resource limits, seccomp filtering, and network isolation.
 //!
 //! ## One-shot execution
 //!
@@ -36,21 +36,24 @@
 //! ## Spawn (persistent process)
 //!
 //! ```rust,no_run
-//! use libsandbox::{Sandbox, Stdio};
+//! use libsandbox::Sandbox;
 //!
 //! let sandbox = Sandbox::builder().build().unwrap();
 //! let child = sandbox.spawn("bash", &["--login"]).unwrap();
-//! // interact via child.stdout_fd(), child.stdin_fd(), etc.
-//! let status = child.wait().unwrap();
-//! println!("exit: {}", status.code());
+//! // `spawn()` pipes stdout/stderr by default; `wait()` would deadlock on
+//! // undrained pipes, so collect the output with `wait_with_output()` (or read
+//! // `child.stdout_fd()` concurrently before calling `wait()`). For an async
+//! // wait, enable the `tokio` feature and use `Child::wait_async()`.
+//! let output = child.wait_with_output().unwrap();
+//! println!("exit: {}", output.status.code());
 //! ```
 //!
 //! On Linux, explicitly requested cgroup-backed limits fail closed by default.
 //! `ResourceEnforcement::BestEffort` only relaxes controllers that can still be
 //! honestly provisioned on the current execution path. Rootless memory limits
 //! continue to fail closed unless a usable delegated cgroup v2 parent is
-//! available; inspect `Sandbox::run_detailed()` diagnostics for degraded
-//! non-memory limits.
+//! available; inspect `Sandbox::run_cmd(...).run_detailed()` diagnostics for
+//! degraded non-memory limits.
 
 // API documentation is `cargo doc` -- every public item must be documented so the
 // rendered reference stays complete. This denies the build on a missing doc-comment.

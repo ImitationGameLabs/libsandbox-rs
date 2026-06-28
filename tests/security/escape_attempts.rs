@@ -143,8 +143,8 @@ fn test_environment_isolation() {
                 .build()
                 .unwrap(),
         )
-        // clear_env defaults to false (inherit) since v0.2; opt into a clean
-        // environment here to verify the isolation mechanism.
+        // clear_env defaults to false (inherit); opt into a clean environment
+        // here to verify the isolation mechanism.
         .environment(
             libsandbox::config::EnvironmentConfig::builder()
                 .clear_env(true)

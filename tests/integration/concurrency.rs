@@ -1,4 +1,4 @@
-//! P1: Concurrency Tests
+//! Concurrency Tests
 //!
 //! Tests for:
 //! - Thread-safe sandbox ID generation

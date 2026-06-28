@@ -1,4 +1,4 @@
-//! P0: Network Security Tests
+//! Network Security Tests
 //!
 //! Tests for:
 //! - IP bypass prevention (sandboxed process connecting directly via IP)
@@ -17,7 +17,7 @@ use std::time::Duration;
 ///
 /// This test is ignored until the fix is implemented.
 #[test]
-#[ignore = "P0 TODO: Direct IP bypass prevention not yet implemented"]
+#[ignore = "Direct IP bypass prevention not yet implemented"]
 #[cfg(unix)]
 fn test_ip_bypass_blocked() {
     let sandbox = Sandbox::builder()
@@ -231,7 +231,7 @@ fn test_wildcard_domain_matching() {
 /// the proxy. If the client bypasses the proxy (direct connection), this
 /// test will fail. See test_ip_bypass_blocked for the related issue.
 #[test]
-#[ignore = "P0 TODO: HTTPS blocking depends on preventing proxy bypass"]
+#[ignore = "HTTPS blocking depends on preventing proxy bypass"]
 #[cfg(unix)]
 fn test_https_tunnel_respects_whitelist() {
     let sandbox = Sandbox::builder()

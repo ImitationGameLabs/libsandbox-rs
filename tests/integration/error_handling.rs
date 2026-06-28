@@ -1,4 +1,4 @@
-//! P1: Error Handling Tests
+//! Error Handling Tests
 //!
 //! Tests for:
 //! - Graceful degradation (handle missing permissions without panic)

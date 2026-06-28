@@ -1,4 +1,4 @@
-//! P0: Resource Limits Enforcement Tests
+//! Resource Limits Enforcement Tests
 //!
 //! Tests for:
 //! - cgroup cleanup after execution (Linux)

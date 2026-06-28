@@ -10,16 +10,16 @@ mod resource_exhaustion;
 #[path = "security/syscall_filter.rs"]
 mod syscall_filter;
 
-// P0: Process management tests (zombie, process groups, signals)
+// Process management tests (zombie, process groups, signals)
 #[cfg(unix)]
 #[path = "security/process_management.rs"]
 mod process_management;
 
-// P0: Resource enforcement tests (setrlimit, cgroups, OOM)
+// Resource enforcement tests (setrlimit, cgroups, OOM)
 #[path = "security/resource_enforcement.rs"]
 mod resource_enforcement;
 
-// P0: Network security tests (IP bypass, proxy). Requires the tokio feature
+// Network security tests (IP bypass, proxy). Requires the tokio feature
 // (the HTTP proxy is a tokio runtime).
 #[cfg(feature = "tokio")]
 #[path = "security/network_security.rs"]

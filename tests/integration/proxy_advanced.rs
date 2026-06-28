@@ -1,4 +1,4 @@
-//! P1: Advanced Proxy Tests
+//! Advanced Proxy Tests
 //!
 //! Tests for:
 //! - Chunked transfer encoding support

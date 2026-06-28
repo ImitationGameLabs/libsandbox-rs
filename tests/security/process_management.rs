@@ -1,4 +1,4 @@
-//! P0: Process Management Security Tests
+//! Process Management Security Tests
 //!
 //! Tests for:
 //! - Zombie process prevention (wait after kill)
