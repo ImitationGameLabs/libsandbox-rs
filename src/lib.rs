@@ -1,7 +1,8 @@
 //! # libsandbox
 //!
-//! A Linux-only sandbox primitives library providing namespace isolation,
-//! cgroup v2 resource limits, seccomp filtering, and network isolation.
+//! A Linux sandbox for running untrusted processes (including AI agent tool
+//! calls), built on namespace isolation, cgroup v2 resource limits, seccomp-BPF,
+//! landlock, and network isolation.
 //!
 //! ## One-shot execution
 //!
