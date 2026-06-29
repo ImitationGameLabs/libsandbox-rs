@@ -9,7 +9,12 @@ homepage = "https://github.com/ImitationGameLabs/libsandbox-rs"
 documentation = "https://docs.rs/libsandbox"
 readme = "README.md"
 keywords = ["sandbox", "linux", "agent", "security", "seccomp"]
-categories = ["os::linux-apis", "security", "virtualization", "development-tools"]
+categories = [
+  "os::linux-apis",
+  "security",
+  "virtualization",
+  "development-tools",
+]
 rust-version = "1.78"
 autobenches = false
 
@@ -23,6 +28,14 @@ tokio = ["dep:tokio"]
 # module (`prepare_landlock` / `install_landlock` + a `ChildSetup` hook) and
 # widens the `Standard`/`Strict` seccomp allowlists with `landlock_restrict_self`
 # so the child can enter its domain under those profiles. Independent of `tokio`.
+#
+# The `prepare_landlock` preset requires kernel >= 6.2 (landlock ABI V3): it
+# handles `Refer` (V2, cross-directory link/rename) and `Truncate` (V3), but
+# deliberately not `IoctlDev` (V5), which would deny device ioctls (/dev/tty
+# terminal control) unless devices are granted explicitly. The `build_ruleset`
+# mechanism is ABI-parametric, so escape-hatch callers pick their own floor —
+# V1 on older kernels (at the cost of that EXDEV), or V5+ with their own device
+# grants for IoctlDev confinement.
 landlock = ["dep:landlock"]
 
 [dependencies]

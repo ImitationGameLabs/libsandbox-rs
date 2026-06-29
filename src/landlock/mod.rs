@@ -1,7 +1,14 @@
 //! Landlock filesystem-access enforcement — the mechanism half of a sandbox.
 //!
-//! Linux-only, behind the `landlock` feature. This is **not** a full sandbox — no
-//! network, resource, or seccomp isolation (those live in their own modules and are
+//! Linux-only, behind the `landlock` feature. The [`prepare_landlock`] preset requires
+//! **kernel ≥ 6.2 (landlock ABI V3)** — `Refer` (V2) is mandatory for cross-directory
+//! `link`/`rename`, without which build tools fail mid-compile with `EXDEV`, and `Truncate`
+//! (V3) closes the `ftruncate`/`O_TRUNC` gap. The preset deliberately stops at V3: handling
+//! `IoctlDev` (V5) would deny device ioctls (`/dev/tty` terminal control) by default. The
+//! [`build_ruleset`] mechanism follows whatever [`ABI`] the caller passes — V1 on older
+//! kernels (at the cost of that `EXDEV`), or V5+ for callers that want `IoctlDev`
+//! confinement and grant the needed devices themselves. This is **not** a full sandbox
+//! — no network, resource, or seccomp isolation (those live in their own modules and are
 //! composed by the caller). Given an [`AccessDecision`], landlock restricts a spawned
 //! process so it may read per the decision's read policy and write only to the listed
 //! paths.
@@ -132,6 +139,31 @@ fn ll_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> SandboxError 
     SandboxError::new(ErrorKind::Landlock, e.to_string())
 }
 
+/// Wrap a ruleset-creation error (`handle_access` / `create`) with the requested
+/// [`ABI`]. On a too-old kernel landlock-rs returns a raw bitmask dump (e.g.
+/// `partially incompatible access-rights: Refer`); this rewrites it into an actionable
+/// message naming the requested ABI. Abi-neutral for any caller-chosen ABI, except it
+/// appends the preset's kernel floor when `abi == REQUIRED_ABI` (the common path) — see
+/// the conditional below. Scoped to the creation phase — per-rule `add_rule` errors keep
+/// their own (path-specific) context via [`ll_error`].
+fn abi_ctx_err<E: std::error::Error + Send + Sync + 'static>(abi: ABI, e: E) -> SandboxError {
+    // Enrich with the preset's kernel floor only on the preset path (abi == REQUIRED_ABI);
+    // for any other caller-chosen ABI the message stays neutral — the mechanism does not
+    // own a kernel-version table for arbitrary ABIs.
+    let floor = if abi == REQUIRED_ABI {
+        format!(" (the prepare_landlock preset requires kernel >= {REQUIRED_ABI_KERNEL})")
+    } else {
+        String::new()
+    };
+    SandboxError::new(
+        ErrorKind::Landlock,
+        format!(
+            "failed to create landlock ruleset at ABI {abi:?}: the running kernel's landlock ABI \
+             does not support it{floor}: {e}"
+        ),
+    )
+}
+
 /// Narrow `desired` to the access-rights landlock will accept for `path`'s file type —
 /// the one invariant the mechanism owns.
 ///
@@ -142,7 +174,7 @@ fn ll_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> SandboxError 
 /// every non-directory file type.
 ///
 /// `from_file(abi)` (rather than a hardcoded bit set) is `from_all(abi) & ACCESS_FILE`,
-/// so it tracks the pinned [`ABI`] and drops exactly the directory-only bits — never a
+/// so it tracks the requested [`ABI`] and drops exactly the directory-only bits — never a
 /// file-applicable bit the caller asked for (no silent under-grant).
 ///
 /// Pure: no kernel, no fd — unit-testable without landlock support.
@@ -154,31 +186,66 @@ fn legal_mask(desired: BitFlags<AccessFs>, path: &Path, abi: ABI) -> BitFlags<Ac
     }
 }
 
-/// Mechanism floor: build a ruleset from explicit `(path, desired-mask)` rules.
+/// Mechanism floor: build a ruleset from explicit `(path, desired-mask)` rules at a
+/// caller-chosen [`ABI`].
 ///
-/// The caller controls exactly what is granted — including `/` — by composing raw
-/// [`AccessFs`] masks (e.g. `AccessFs::from_read(ABI::V1)` for a read-only rule,
-/// `AccessFs::from_all(ABI::V1)` for full read+write). [`prepare_landlock`] is the
-/// opinionated policy built on top of this; callers wanting full control (custom masks,
-/// their own baseline, no [`AccessDecision`]) call this directly.
+/// The caller controls two things:
+/// - **`abi`** — the ruleset's handled-access *universe* (`from_all(abi)`): the set of
+///   rights this domain can possibly grant. Each rule's mask below must be a subset of
+///   it; a mask carrying a bit `abi` does not handle surfaces as an `UnhandledAccess`
+///   `add_rule` error.
+/// - **`rules`** — exactly what is granted (including `/`) via raw [`AccessFs`] masks
+///   (e.g. [`AccessFs::from_read`] for a read-only rule, [`AccessFs::from_all`] for full
+///   read+write). [`prepare_landlock`] is the opinionated policy built on top of this;
+///   callers wanting full control (custom masks, their own baseline, no
+///   [`AccessDecision`]) call this directly.
+///
+/// `abi` is a re-exported `landlock::ABI` (`#[non_exhaustive]`, grows over time);
+/// [`prepare_landlock`] / [`REQUIRED_ABI`] is the version-stable entry point.
 ///
 /// Owns the file-type invariant: non-directory paths are automatically narrowed to
 /// file-level rights, so directories, device files, and regular files may be freely
 /// mixed without the caller branching on file type. Non-existent paths are skipped (a
 /// path may have been removed after it was added); duplicate paths are skipped too, with
-/// the first mask winning. `HardRequirement` fails closed on an unsupported kernel —
-/// gate #1.
+/// the first mask winning. `HardRequirement` fails closed on a kernel that does not
+/// support `abi` — gate #1.
 ///
-/// # ABI pin
+/// # ABI
 ///
-/// Pinned to [`ABI::V1`] (the ported baseline). On kernels ≥5.19 (ABI V2/V3) the
-/// `Refer`/`Truncate`/`IoctlDev` access types are not handled and therefore unrestricted
-/// by the domain — e.g. certain device ioctls are not confined. Upgrading the ABI is
-/// tracked separately.
-pub fn build_ruleset(rules: &[(PathBuf, BitFlags<AccessFs>)]) -> Result<PreparedLandlock> {
+/// Each tier adds access rights cumulatively (kernel versions per the landlock-rs `ABI`
+/// enum; V4/V6/V7 add **no** `AccessFs` right over their predecessor — their new features
+/// are non-filesystem, which a pure-FS ruleset does not handle):
+///
+/// | ABI | Kernel | Adds (`AccessFs`, cumulative) |
+/// |-----|--------|-------------------------------|
+/// | V1  | 5.13   | base filesystem rights |
+/// | V2  | 5.19   | `Refer` (cross-directory `link`/`rename`) |
+/// | V3  | 6.2    | `Truncate` |
+/// | V4  | 6.7    | *(no new `AccessFs` right)* |
+/// | V5  | 6.10   | `IoctlDev` |
+/// | V6  | 6.12   | *(no new `AccessFs` right)* |
+/// | V7  | 6.15   | *(no new `AccessFs` right)* |
+///
+/// `Refer` is special: a ruleset that does **not** handle it (i.e. `abi` < V2) makes
+/// cross-directory `link`/`rename`/`renameat2` return **`EXDEV`** — not permitted, and
+/// not `EACCES`. By contrast, `Truncate`/`IoctlDev` *are* genuinely unrestricted when
+/// unhandled (the domain simply does not confine them) — but `IoctlDev` in particular is
+/// a footgun as a default: handling it makes device ioctls deny-by-default, so
+/// [`prepare_landlock`] stops at V3 and leaves `IoctlDev` to callers who grant the needed
+/// devices (`/dev/tty`, …) themselves.
+///
+/// # Warning
+///
+/// [`ABI::V1`] reintroduces the `EXDEV` failure: build tools (cargo, rustc, ninja, make)
+/// emit `os error 18` mid-compile on any cross-directory hardlink/rename. The preset floor
+/// is [`REQUIRED_ABI`] (V3); pass `ABI::V1` (the escape-hatch) only when the workload
+/// provably never crosses directories.
+pub fn build_ruleset(
+    abi: ABI,
+    rules: &[(PathBuf, BitFlags<AccessFs>)],
+) -> Result<PreparedLandlock> {
     ensure_supported()?;
 
-    let abi = ABI::V1;
     // Handled-access scope for the ruleset (the universe of rights this domain can
     // grant), not a per-rule mask — each rule carries its own mask below.
     let full = AccessFs::from_all(abi);
@@ -186,9 +253,9 @@ pub fn build_ruleset(rules: &[(PathBuf, BitFlags<AccessFs>)]) -> Result<Prepared
     let mut created = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(full)
-        .map_err(ll_error)?
+        .map_err(|e| abi_ctx_err(abi, e))?
         .create()
-        .map_err(ll_error)?;
+        .map_err(|e| abi_ctx_err(abi, e))?;
     let mut seen: std::collections::HashSet<&Path> = std::collections::HashSet::new();
     for (path, desired) in rules {
         // `exists()` must run before `legal_mask`: it rejects dangling symlinks and
@@ -249,6 +316,31 @@ impl PreparedLandlock {
     }
 }
 
+/// The landlock [`ABI`] the [`prepare_landlock`] preset requires.
+///
+/// Pinned to [`ABI::V3`] (kernel ≥ 6.2): `Refer` (V2) is the floor for any real workload —
+/// without it cross-directory `link`/`rename` are rejected with `EXDEV` and build tools
+/// (cargo, rustc, …) crash mid-compile — and `Truncate` (V3) closes the `ftruncate` /
+/// `O_TRUNC` gap. The preset stops at V3 rather than going higher because handling
+/// `IoctlDev` (V5) would deny device ioctls (`/dev/tty` terminal control) unless each
+/// device is granted explicitly; callers who want that confinement pass `ABI::V5` (or
+/// higher) to [`build_ruleset`] directly and grant the devices themselves. Exposed so
+/// callers driving [`build_ruleset`] can stay in lockstep with the preset by referencing
+/// this constant rather than hardcoding `ABI::V3`.
+///
+/// Bumping this is a coordinated change: the **runtime** kernel-floor string is centralized
+/// in `REQUIRED_ABI_KERNEL` (interpolated by `abi_ctx_err`, test-guarded), but the **prose**
+/// "6.2" / "V3" mentions in the module/README/Cargo.toml docs are hand-maintained and
+/// unguarded — grep for them when bumping.
+pub const REQUIRED_ABI: ABI = ABI::V3;
+
+/// Kernel floor for [`REQUIRED_ABI`] (`ABI::V3` -> Linux 6.2). The single source for this
+/// version string: [`abi_ctx_err`] interpolates it, and a unit test asserts the
+/// interpolation stays in lockstep. There is no public `ABI` -> kernel-version table in
+/// landlock-rs to derive this from, so it is a manual const — bump it together with
+/// [`REQUIRED_ABI`].
+const REQUIRED_ABI_KERNEL: &str = "6.2";
+
 /// Parent-side: build a landlock ruleset from an [`AccessDecision`]. May allocate; does
 /// not touch kernel state beyond the (cached) support probe and ruleset creation.
 ///
@@ -264,9 +356,12 @@ impl PreparedLandlock {
 /// literal makes it a visible decision (and a visible test dimension) rather than an
 /// invisible one. Apply the result in the child via [`install_landlock`] (or use
 /// [`landlock_hook`] to compose both).
+///
+/// Pinned to [`REQUIRED_ABI`] (V3); see its doc for the V3-vs-`IoctlDev` rationale. A
+/// too-old kernel fails loud at ruleset creation.
 pub fn prepare_landlock(decision: &AccessDecision) -> Result<PreparedLandlock> {
-    let abi = ABI::V1;
-    let read = AccessFs::from_read(abi); // includes Execute for V1+
+    let abi = REQUIRED_ABI;
+    let read = AccessFs::from_read(abi); // Execute is included for every supported ABI
                                          // Per-rule mask granted to each writable path (narrowed to file-level rights by the
                                          // floor for non-directories). Distinct from build_ruleset's handled-access scope.
     let full = AccessFs::from_all(abi);
@@ -286,7 +381,7 @@ pub fn prepare_landlock(decision: &AccessDecision) -> Result<PreparedLandlock> {
         }
     }
 
-    build_ruleset(&rules)
+    build_ruleset(abi, &rules)
 }
 
 /// Child-side: apply the prepared landlock domain to the current process.
@@ -349,9 +444,14 @@ fn restrict_self_raw(ruleset_fd: RawFd) -> std::io::Result<()> {
 static SUPPORT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
 /// Probe landlock support exactly once (process-wide cached). The probe builds a trivial
-/// ruleset with `CompatLevel::HardRequirement`; on an unsupported/disabled kernel this
-/// errors and is cached so subsequent ruleset builds (via [`build_ruleset`], and thus
-/// [`prepare_landlock`]) fail fast with a clear message instead of aborting every spawn.
+/// V1 ruleset with `CompatLevel::HardRequirement`; on a kernel without landlock (or with
+/// it boot-disabled) this errors and is cached so subsequent calls fail fast instead of
+/// aborting every spawn.
+///
+/// This is a **presence** gate only ("is landlock usable at all"), not an ABI gate: a V1
+/// kernel passes it, then the per-request ABI floor in [`build_ruleset`] (via
+/// `HardRequirement` + the caller's `abi`) catches a too-low ABI with a clear message.
+/// Two layers, both fail-closed.
 ///
 /// `pub(crate)` rather than `pub`: the cache is process-global mutable state (an
 /// implementation detail) that should not be triggered by external callers.
@@ -369,7 +469,13 @@ pub(crate) fn ensure_supported() -> Result<()> {
 /// The actual probe: build + create a minimal read-only ruleset. `create()` issues
 /// `landlock_create_ruleset(2)`, surfacing `ENOSYS`/`EOPNOTSUPP` on an unsupported or
 /// boot-disabled kernel.
+///
+/// Intentionally `ABI::V1`: this is a presence check, not an ABI check. Bumping it to
+/// the preset's `REQUIRED_ABI` would re-couple the presence gate to one policy and make
+/// a legitimate `build_ruleset(ABI::V1, …)` escape-hatch call fail here for the wrong
+/// reason. The ABI floor is enforced per-request in [`build_ruleset`].
 fn probe_support() -> Result<()> {
+    // Presence-only: V1 is the cheapest "is landlock here?" test.
     let abi = ABI::V1;
     let created = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)

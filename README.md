@@ -16,6 +16,7 @@ libsandbox is Linux-only; it fails to compile on other platforms.
 - cgroup v2 mounted at `/sys/fs/cgroup`
 - Unprivileged user namespaces enabled (`kernel.unprivileged_userns_clone=1`)
 - **MSRV:** Rust 1.78
+- Optional `landlock` feature: its `prepare_landlock` preset needs kernel ≥ 6.2 (a higher floor than the rest of the crate) — see [Cargo Features](#cargo-features)
 
 Probe unprivileged-user-namespace availability at runtime with
 `libsandbox::is_supported()`. (This checks userns support only; cgroup v2
@@ -100,6 +101,30 @@ println!("exit: {}", output.status.code());
   (`prepare_landlock` / `install_landlock` + a `ChildSetup` hook) and widens the
   `Standard` / `Strict` seccomp allowlists with `landlock_restrict_self` so the
   child can enter its domain. Independent of `tokio`.
+
+  The `prepare_landlock` preset is pinned to landlock **ABI V3** (**kernel ≥ 6.2**):
+  it handles `Refer` (V2, needed for cross-directory `link`/`rename`) and `Truncate`
+  (V3), but deliberately not `IoctlDev` (V5) — handling that would deny device ioctls
+  (`/dev/tty` terminal control) unless each device is granted explicitly. Callers who
+  want `IoctlDev` confinement pass a higher ABI to `build_ruleset` directly and grant
+  the devices themselves.
+
+  The `build_ruleset` mechanism is fully ABI-parametric, so escape-hatch callers pick
+  their own floor. Each tier needs (per the landlock-rs `ABI` enum; V4/V6/V7 add no
+  filesystem right over their predecessor):
+
+  | ABI | Kernel | Adds (`AccessFs`, cumulative)        |
+  |-----|--------|--------------------------------------|
+  | V1  | 5.13   | base filesystem rights               |
+  | V2  | 5.19   | `Refer` (cross-directory `link`/`rename`)  |
+  | V3  | 6.2    | `Truncate`                           |
+  | V4  | 6.7    | *(no new `AccessFs` right)*          |
+  | V5  | 6.10   | `IoctlDev`                           |
+  | V6  | 6.12   | *(no new `AccessFs` right)*          |
+  | V7  | 6.15   | *(no new `AccessFs` right)*          |
+
+  Below V2 the preset's `EXDEV` failure returns (cross-dir `link`/`rename` fail
+  mid-compile), so use V2+ unless the workload provably never crosses directories.
 
 ```toml
 # Pure-sync build, no network proxy, plus landlock enforcement:

@@ -104,6 +104,7 @@ pub use stdio::Stdio;
 pub use landlock::{
     baseline_readable, baseline_writable, build_ruleset, install_landlock, landlock_hook,
     prepare_landlock, AccessDecision, AccessFs, BitFlags, PreparedLandlock, ReadPolicy, ABI,
+    REQUIRED_ABI,
 };
 
 // Mount-namespace child-side primitives (Linux only; libc syscalls, no extra dependency). A
